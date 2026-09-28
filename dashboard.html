@@ -852,7 +852,7 @@ function renderDetail(d) {
           <div class="sep"></div>
           <label class="plain"><input type="checkbox" id="export-steps" ${exportSteps ? "checked" : ""}>附上執行過程</label>
         </div></div>`}</div>
-    <div class="m">${when(r.started)}${r.trigger === "schedule" ? "排程" : "手動"}開始${took}，使用 ${esc(modelName(r.model, r.provider))}</div>
+    <div class="m">${when(r.started)}${{schedule: "排程", cli: "從命令列"}[r.trigger] || "手動"}開始${took}，使用 ${esc(modelName(r.model, r.provider))}</div>
     ${r.status === "running" ? `<div class="section">結果</div><div class="run-text">還在跑，看上面「現在」那一區</div>` : ""}
     ${r.output ? `<div class="section">結果</div><div class="result">${md(r.output)}</div>` : ""}
     ${r.status === "cancelled" ? `<div class="section">結果</div><div class="muted">你在這裡停止了執行，沒有產出結果。</div>` : ""}
@@ -871,7 +871,7 @@ function exportDoc(d, withSteps) {
   const r = d.run, title = wfTitle(r.workflow), st = STATUS[r.status][0];
   const started = new Date(r.started * 1000);
   const stamp = started.toLocaleString("zh-TW", {year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false});
-  const meta = `${stamp} ${r.trigger === "schedule" ? "排程" : "手動"}執行 · ${st}` +
+  const meta = `${stamp} ${{schedule: "排程", cli: "命令列"}[r.trigger] || "手動"}執行 · ${st}` +
     (r.finished ? ` · 花了 ${dur(r.finished - r.started)}` : "") + ` · ${modelName(r.model, r.provider)}`;
   let body = r.output || (r.error ? `**沒有完成：** ${humanError(r.error)}` : "（沒有產出）");
   let mdText = `# ${title}\n\n${meta}\n\n---\n\n${body}\n`;
