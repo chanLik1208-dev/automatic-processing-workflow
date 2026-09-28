@@ -8,12 +8,11 @@
     "lmstudio": {
       "base_url": "http://localhost:1234/v1",
       "api_key": "lm-studio",
-      "default_model": "qwen3.5-9b-uncensored-hauhaucs-aggressive-mlx"
+      "default_model": ""
     },
     "claude": {
       "type": "cli",
       "command": "claude",
-      "path": "~/.local/bin/claude",
       "label": "Claude 訂閱",
       "default_model": "sonnet",
       "models": [
@@ -84,8 +83,6 @@
   },
   "tick_seconds": 30,
   "readable_paths": [
-    "~/*.log",
-    "~/Dynamization-src/**",
     "{data}/reports/*"
   ]
 }

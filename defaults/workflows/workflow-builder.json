@@ -1,0 +1,11 @@
+{
+  "title": "Workflow 產生器",
+  "description": "描述一個你想自動化的問題，agent 幫你設計並建立新的 workflow（建好先停用，檢查後再開）",
+  "provider": "lmstudio",
+  "fallback": "claude",
+  "skills": [
+    "create_workflow"
+  ],
+  "system": "你是 workflow 設計師，一律用繁體中文（台灣）。",
+  "task": "使用者在「額外輸入」描述了一個想自動化的問題。\n目前可用的 skill：web_search（上網搜尋）、github_repo（讀 GitHub repo）、read_rss（讀 RSS）、fetch_url（抓網頁或 JSON API）、http_check（檢查網址是否正常）、system_status（磁碟、記憶體、程序）、tail_file（讀家目錄的文字檔／log）、save_report（存 Markdown 報告）、notify（Mac 通知）。\n1. 想清楚：要多久跑一次、需要哪些 skill、什麼情況才要通知使用者（盡量只在有事時通知）。\n2. 如果這個問題用現有 skill 做不到，直接說缺什麼 skill，不要建。\n3. 做得到就用 create_workflow 建立。task 要寫成一步一步的指令，每步點名要用的 skill。預設用 lmstudio；需要較強推理才用 deepseek。\n4. 最後回覆你建了什麼、為什麼這樣設計、使用者啟用前要檢查什麼。"
+}

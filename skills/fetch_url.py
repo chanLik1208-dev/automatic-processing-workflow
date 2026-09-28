@@ -78,6 +78,9 @@ def run(url, max_chars=6000):
     if len(text) < 200:                  # 過濾太兇、幾乎什麼都沒留下時，退回寬鬆版本
         text = "\n".join(l for l in _to_lines(body) if len(l) >= 4)
 
+    if not text.strip():
+        return (f"抓不到這個網頁的正文（標題：{title or '無'}）。這類頁面通常要執行 JavaScript 才會出現內容，"
+                "請換一個來源，不要當作已經讀過。")
     head = [f"標題：{title}" if title else "", f"日期：{date}" if date else "",
             f"摘要：{desc}" if desc and desc.rstrip(".…")[:40] not in text else ""]
     out = "\n".join(h for h in head if h)

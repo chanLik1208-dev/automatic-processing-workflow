@@ -1,0 +1,72 @@
+name: build
+
+# 推 v* 標籤：三個平台各自編譯、實際啟動測一次，然後發佈到 Releases
+# 手動觸發（Actions 頁面的 Run workflow）：只編譯，產物在該次執行的 Artifacts
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14        # Apple Silicon
+          - os: macos-13        # Intel Mac
+          - os: ubuntu-22.04    # 用較舊的 glibc 編，新舊發行版都能跑
+          - os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install pyinstaller
+      - run: python build.py
+
+      - name: 啟動測試（macOS / Linux）
+        if: runner.os != 'Windows'
+        run: |
+          BIN=$(ls dist/AutoWorkflow-*)
+          AUTOWORKFLOW_HOME=$RUNNER_TEMP/home "$BIN" --port 8799 --no-browser &
+          for i in $(seq 1 60); do curl -sf localhost:8799/api/providers && break; sleep 1; done
+          curl -sf localhost:8799/api/workflows | python -c "import json,sys; w=json.load(sys.stdin); assert len(w)==3, w; print('ok', [x['name'] for x in w])"
+          curl -sf localhost:8799/ | grep -q "自動化工作流"
+          kill %1
+
+      - name: 啟動測試（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = (Get-ChildItem dist\AutoWorkflow-*.exe).FullName
+          $env:AUTOWORKFLOW_HOME = "$env:RUNNER_TEMP\home"
+          $p = Start-Process $bin -ArgumentList "--port","8799","--no-browser" -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 60; $i++) { try { Invoke-RestMethod http://127.0.0.1:8799/api/providers | Out-Null; $ok = $true; break } catch { Start-Sleep 1 } }
+          if (-not $ok) { throw "沒有啟動" }
+          $w = Invoke-RestMethod http://127.0.0.1:8799/api/workflows
+          if ($w.Count -ne 3) { throw "預設工作流數量不對：$($w.Count)" }
+          Stop-Process $p.Id
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}
+          path: dist/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

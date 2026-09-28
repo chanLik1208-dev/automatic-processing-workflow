@@ -1,9 +1,12 @@
 """Agent 執行引擎：讀 workflow → 跑 tool-calling 迴圈 → 每一步寫進 SQLite。"""
 import datetime
 import importlib.util
+import shutil
+import tempfile
 import subprocess
 import json
 import os
+import sys
 import pathlib
 import re
 import sqlite3
@@ -13,8 +16,43 @@ import traceback
 import urllib.error
 import urllib.request
 
-ROOT = pathlib.Path(__file__).parent
+# APP_DIR：程式自己帶的檔案（打包後在唯讀的暫存資料夾）
+# ROOT：使用者的資料（設定、工作流、skill、紀錄、報告），打包後放在各平台的使用者資料夾
+APP_DIR = pathlib.Path(getattr(sys, "_MEIPASS", pathlib.Path(__file__).parent))
+
+
+def _data_dir():
+    if os.environ.get("AUTOWORKFLOW_HOME"):
+        return pathlib.Path(os.environ["AUTOWORKFLOW_HOME"]).expanduser()
+    if not getattr(sys, "frozen", False):
+        return pathlib.Path(__file__).parent            # 用原始碼跑：資料就在專案資料夾
+    home = pathlib.Path.home()
+    if sys.platform == "darwin":
+        return home / "Library" / "Application Support" / "AutoWorkflow"
+    if sys.platform == "win32":
+        return pathlib.Path(os.environ.get("APPDATA", home / "AppData" / "Roaming")) / "AutoWorkflow"
+    return pathlib.Path(os.environ.get("XDG_DATA_HOME", home / ".local" / "share")) / "autoworkflow"
+
+
+ROOT = _data_dir()
 DB_PATH = ROOT / "data" / "runs.db"
+
+
+def seed_data_dir():
+    """第一次執行時把預設的設定、工作流、skill 放進資料夾。
+    內建 skill 每次啟動都會更新成程式附的版本（使用者自己加的 skill 不動）；設定和工作流只補缺的，不覆蓋。"""
+    for sub in ("data", "reports", "workflows", "skills"):
+        (ROOT / sub).mkdir(parents=True, exist_ok=True)
+    if APP_DIR.resolve() == ROOT.resolve():
+        return
+    src = APP_DIR / "defaults" if (APP_DIR / "defaults").is_dir() else APP_DIR
+    if not (ROOT / "config.json").exists():
+        shutil.copy2(src / "config.json", ROOT / "config.json")
+    for f in (src / "workflows").glob("*.json"):
+        if not (ROOT / "workflows" / f.name).exists():
+            shutil.copy2(f, ROOT / "workflows" / f.name)
+    for f in (APP_DIR / "skills").glob("*.py"):
+        shutil.copy2(f, ROOT / "skills" / f.name)
 _db_lock = threading.Lock()
 
 
@@ -31,6 +69,7 @@ def db():
 
 
 def init_db():
+    seed_data_dir()
     with _db_lock, db() as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS runs (
@@ -171,6 +210,8 @@ def trash_workflow(name):
 
 def provider_conf(name):
     p = dict(load_config()["providers"][name])
+    if p.get("type") == "cli":
+        return p
     if "api_key_env" in p:
         p["api_key"] = os.environ.get(p["api_key_env"], "")
         if not p["api_key"]:
@@ -187,7 +228,7 @@ class ModelBroken(Exception):
 
 
 LMS_LOGS = pathlib.Path.home() / ".lmstudio" / "server-logs"
-LMS_CLI = pathlib.Path.home() / ".lmstudio" / "bin" / "lms"
+LMS_CLI = pathlib.Path.home() / ".lmstudio" / "bin" / ("lms.exe" if sys.platform == "win32" else "lms")
 
 
 def _lms_log():
@@ -283,6 +324,9 @@ def cancel(name):
     ids = [rid for rid, v in LIVE.items() if v["workflow"] == name]
     _cancel.update(ids)
     for rid in ids:                             # 正在等模型的話直接切斷連線，LM Studio 也會跟著停止生成
+        proc = LIVE.get(rid, {}).get("_proc")
+        if proc:
+            proc.kill()
         resp = LIVE.get(rid, {}).get("_resp")
         if resp:
             try:
@@ -299,8 +343,10 @@ LIVE = {}
 def chat(provider, model, messages, tools, live=None, timeout=300, max_tokens=4096):
     """串流呼叫，邊收邊更新 live；回傳格式跟非串流的 chat completion 一樣。"""
     p = provider_conf(provider)
+    if p.get("type") == "cli":
+        return chat_cli(p, model, messages, tools, live if live is not None else {})
     # 一定要有上限：模型偶爾會鬼打牆地一直生成，沒上限就會一路寫到 context 滿
-    body = {"model": model or p["default_model"], "messages": messages, "temperature": 0.3,
+    body = {"model": model or p["default_model"] or _loaded_model(p), "messages": messages, "temperature": 0.3,
             "max_tokens": max_tokens, "stream": True, "stream_options": {"include_usage": True}}
     if tools:
         body["tools"] = tools
@@ -393,9 +439,155 @@ def chat(provider, model, messages, tools, live=None, timeout=300, max_tokens=40
     return {"model": model_name, "usage": usage, "choices": [{"message": msg}]}
 
 
+# ---------- 訂閱型 CLI（用登入的帳號，不用 API key） ----------
+# CLI 代理自己的工具全部關掉，只拿它當「會思考的模型」；要動手的事一律走我們的 skill，
+# 這樣白名單、停止、監控都照樣有效。工具呼叫改用文字協定：要用工具時整段回覆只放一個 JSON。
+
+TOOL_PROTOCOL = """
+
+## 工具
+你可以使用下面這些工具（JSON Schema）：
+{specs}
+
+要使用工具時，整個回覆只能是一個 JSON 物件，不要有其他文字、不要用 ``` 包起來：
+{{"say": "一句話說明你要做什麼（可省略）", "tool_calls": [{{"name": "工具名稱", "arguments": {{...}}}}]}}
+可以一次呼叫好幾個工具。工具的結果會在下一則訊息給你。
+不需要再用工具、要給出最終答案時，直接用一般文字回覆，不要輸出 JSON。
+你沒有其他任何工具或檔案存取能力，只能用上面列出的這些。"""
+
+
+def _transcript(messages):
+    """把 OpenAI 格式的對話攤平成一段文字（CLI 每次都是無狀態呼叫）。"""
+    out = []
+    for m in messages[1:]:
+        if m["role"] == "user":
+            out.append(f"## 使用者\n{m['content']}")
+        elif m["role"] == "assistant":
+            part = [m["content"]] if m.get("content") else []
+            for c in m.get("tool_calls") or []:
+                part.append(f"[呼叫工具] {c['function']['name']} {c['function']['arguments']}")
+            out.append("## 你（先前的回覆）\n" + "\n".join(part))
+        elif m["role"] == "tool":
+            out.append(f"## 工具結果\n{m['content']}")
+    out.append("## 現在輪到你回覆")
+    return "\n\n".join(out)
+
+
+def _parse_tool_json(text):
+    """找回覆裡帶 tool_calls 的 JSON 物件；模型常會先講一句話再接 JSON，前面的話當作 say。"""
+    t = re.sub(r"```(?:json)?", "", text)
+    dec = json.JSONDecoder()
+    for m in re.finditer(r"\{", t):
+        try:
+            d, _ = dec.raw_decode(t, m.start())
+        except ValueError:
+            continue
+        if isinstance(d, dict) and isinstance(d.get("tool_calls"), list):
+            before = t[:m.start()].strip()
+            if before and not d.get("say"):
+                d["say"] = before
+            return d
+    return None
+
+
+CLI_ADAPTERS = {"claude"}                        # 實際測通過的；codex / gemini 等安裝後再接
+
+
+def chat_cli(p, model, messages, tools, live, timeout=600):
+    if p.get("adapter") not in CLI_ADAPTERS:
+        raise RuntimeError(f"{p.get('label') or p['command']} 的串接還沒完成")
+    system = messages[0]["content"]
+    if tools:
+        system += TOOL_PROTOCOL.format(specs=json.dumps([t["function"] for t in tools], ensure_ascii=False, indent=1))
+    model = model or p["default_model"]
+    cmd = [shutil.which(p["command"]) or os.path.expanduser(p["path"]),
+           "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+           "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--setting-sources", "project",
+           "--system-prompt", system, "--model", model]
+    tmp = tempfile.mkdtemp(prefix="wf-cli-")         # 在空資料夾執行，不會讀到任何專案的 CLAUDE.md / 設定
+    proc = subprocess.Popen(cmd, cwd=tmp, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8")
+    live["_proc"] = proc
+    killer = threading.Timer(timeout, proc.kill)
+    killer.start()
+    text, thinking, usage, result, err = "", "", {}, None, None
+    try:
+        proc.stdin.write(_transcript(messages))
+        proc.stdin.close()
+        for line in proc.stdout:
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            ev = e.get("event") or {}
+            if ev.get("type") == "content_block_delta":
+                d = ev.get("delta") or {}
+                live["last_token"] = time.time()
+                if d.get("type") == "thinking_delta":
+                    thinking += d.get("thinking", "")
+                    live.update(phase="thinking", reasoning=thinking)
+                elif d.get("text"):
+                    text += d["text"]
+                    # 開始寫工具呼叫的 JSON 了，不要當成結果顯示
+                    if '"tool_calls"' in text or text.lstrip().startswith("{"):
+                        live.update(phase="deciding", tool={"name": "", "args": ""})
+                    else:
+                        live.update(phase="writing", content=text)
+            elif e.get("type") == "result":
+                usage, result = e.get("usage") or {}, e.get("result")
+                if e.get("is_error"):
+                    err = result or e.get("subtype")
+        proc.wait()
+    finally:
+        killer.cancel()
+        live.pop("_proc", None)
+        shutil.rmtree(tmp, ignore_errors=True)
+    if live.get("run_id") in _cancel:
+        raise Cancelled()
+    if err or proc.returncode:
+        raise RuntimeError(f"{p['command']} 執行失敗：{err or proc.stderr.read()[-400:] or proc.returncode}")
+    text = result if isinstance(result, str) and result else text
+    parsed = _parse_tool_json(text) if tools else None
+    msg = {"role": "assistant", "content": text, "reasoning_content": thinking}
+    if parsed:
+        msg["content"] = parsed.get("say") or None
+        msg["tool_calls"] = [{"id": f"call_{i}", "type": "function",
+                              "function": {"name": c.get("name", ""), "arguments": json.dumps(c.get("arguments") or {}, ensure_ascii=False)}}
+                             for i, c in enumerate(parsed["tool_calls"])]
+    if not msg.get("content") and not msg.get("tool_calls"):
+        raise ModelBroken(f"{p['command']} 沒有回傳任何內容。")
+    return {"model": model, "choices": [{"message": msg}],
+            "usage": {"prompt_tokens": usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0),
+                      "completion_tokens": usage.get("output_tokens", 0)}}
+
+
+def _loaded_model(p):
+    """沒指定模型時，問 LM Studio 目前載入了哪顆（跳過 embedding 模型）。"""
+    base = p["base_url"].rstrip("/")
+    try:
+        with urllib.request.urlopen(base.replace("/v1", "") + "/api/v0/models", timeout=5) as r:
+            ms = json.loads(r.read()).get("data", [])
+        loaded = [m["id"] for m in ms if m.get("state") == "loaded" and m.get("type") != "embeddings"]
+        if loaded:
+            return loaded[0]
+        raise RuntimeError("LM Studio 目前沒有載入任何模型，請先在 LM Studio 載入一個模型，或在工作流設定裡指定模型")
+    except urllib.error.URLError:
+        raise RuntimeError("連不上 LM Studio（請確認已開啟，並在 Developer 分頁啟動 server）")
+
+
 def ping_provider(name):
     try:
         p = provider_conf(name)
+        if p.get("type") == "cli":
+            exe = shutil.which(p["command"]) or (os.path.expanduser(p["path"]) if p.get("path") else "")
+            info = {"kind": "cli", "label": p.get("label"), "default_model": p["default_model"], "models": p.get("models", [])}
+            if not exe or not os.path.exists(exe):
+                plat = "win32" if sys.platform == "win32" else "darwin" if sys.platform == "darwin" else "linux"
+                return {**info, "ok": False, "missing": True, "error": f"沒有安裝 {p['command']}",
+                        "install": (p.get("install") or {}).get(plat, []), "login": p.get("login", "")}
+            if p.get("adapter") not in CLI_ADAPTERS:
+                return {**info, "ok": False, "error": f"已安裝 {p['command']}，但串接還沒完成"}
+            return {**info, "ok": True}
         req = urllib.request.Request(p["base_url"].rstrip("/") + "/models",
                                      headers={"Authorization": f"Bearer {p['api_key']}"})
         with urllib.request.urlopen(req, timeout=5) as r:
@@ -493,7 +685,7 @@ def run_workflow(name, trigger="manual", extra_input=""):
                 add_step(run_id, idx, "tool", fn, call["function"].get("arguments"), result[:20000],
                          int((time.time() - t0) * 1000))
                 idx += 1
-                failed = result.startswith(("[skill 錯誤]", "找不到", "這個路徑不", "沒有這個", "只接受"))
+                failed = result.startswith(("[skill 錯誤]", "找不到", "抓不到", "這個路徑不", "沒有這個", "只接受"))
                 fails = fails + 1 if failed else 0
                 if fails >= 3:
                     # 小模型碰到錯誤常會一直換個猜法重試；連錯三次就叫它停下來照實回報

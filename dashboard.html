@@ -24,6 +24,11 @@ body { margin: 0; background: var(--bg); color: var(--ink);
 header h1 { font-size: 22px; margin: 0; letter-spacing: .02em; }
 .summary { color: var(--soft); margin: 4px 0 16px; }
 .summary b { color: var(--ink); font-weight: 600; }
+#install-box details { margin: -8px 0 16px; font-size: 13.5px; color: var(--soft); }
+#install-box summary { cursor: pointer; color: var(--muted); }
+#install-box .inst { margin: 10px 0 0 16px; }
+#install-box pre { background: var(--tint); padding: 8px 12px; border-radius: 6px; margin: 4px 0; font: 12.5px ui-monospace, Menlo, monospace;
+                   white-space: pre-wrap; }
 .bad-text { color: var(--bad); } .ok-text { color: var(--ok); } .run-text { color: var(--run); } .warn-text { color: var(--warn); }
 .muted { color: var(--muted); }
 h2 { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: .08em; margin: 0 0 10px; }
@@ -229,6 +234,7 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
   <header>
     <h1>自動化工作流</h1>
     <div class="summary" id="summary">讀取中…</div>
+    <div id="install-box"></div>
   </header>
 
   <div class="panel bar" id="bar">
@@ -358,7 +364,7 @@ let WF = {}, WFS = [], PROV = {}, SKILLS = [], selWf = null, selRun = null, show
 // ── 白話化 ─────────────────────────────────────────
 const STATUS = {success: ["成功", "ok"], failed: ["失敗", "bad"], running: ["執行中", "run"], interrupted: ["中斷", "warn"],
                 cancelled: ["已停止", "warn"]};
-const PROVIDER = {lmstudio: "本機", deepseek: "DeepSeek"};
+const PROVIDER = {lmstudio: "本機", deepseek: "DeepSeek", claude: "Claude 訂閱", codex: "ChatGPT 訂閱", gemini: "Gemini"};
 
 function modelName(id, provider) {
   id = id || PROV[provider]?.default_model || "";
@@ -428,7 +434,7 @@ function describe(name, args) {
 function resultSummary(name, out) {
   out = out || "";
   if (out.startsWith("[skill 錯誤]")) return {err: true, text: out.replace("[skill 錯誤]", "出錯：")};
-  if (/^(找不到|這個路徑不|沒有這個|只接受)/.test(out)) return {err: true, text: out.split("\n")[0].slice(0, 120)};
+  if (/^(找不到|抓不到|這個路徑不|沒有這個|只接受)/.test(out)) return {err: true, text: out.split("\n")[0].slice(0, 120)};
   if (name === "web_search") { const n = (out.match(/^\d+\. /gm) || []).length; return n ? {text: `找到 ${n} 筆`} : {err: true, text: "沒有結果"}; }
   if (name === "read_rss") return {text: `拿到 ${(out.match(/^\d+\. /gm) || []).length} 則`};
   if (name === "http_check") return {err: !out.startsWith("OK"), text: out.split("\n")[0].replace(/^(OK|DOWN|PROBLEM) \S+：/, m => m.startsWith("OK") ? "正常，" : "異常，")};
@@ -485,14 +491,24 @@ function renderSummary(runs) {
   const ok = t.filter(r => r.status === "success").length, bad = t.filter(r => r.status === "failed").length;
   const next = WFS.filter(w => w.next_due && w.enabled).sort((a, b) => a.next_due - b.next_due)[0];
   const running = WFS.filter(w => w.running);
-  const p = Object.entries(PROV).map(([n, v]) => v.ok ? `<span class="ok-text">${PROVIDER[n]}可用</span>`
-    : `<span class="bad-text">${PROVIDER[n]}${/API_KEY/.test(v.error) ? "還沒設定 key" : "連不上"}</span>`).join("、");
+  const p = Object.entries(PROV).filter(([n, v]) => !v.missing).map(([n, v]) => v.ok ? `<span class="ok-text">${PROVIDER[n] || n}可用</span>`
+    : `<span class="bad-text">${PROVIDER[n] || n}${/API_KEY/.test(v.error) ? "還沒設定 key" : v.kind === "cli" ? "還不能用" : "連不上"}</span>`).join("、");
   $("#summary").innerHTML = [
     running.length ? `<b class="run-text">${running.map(w => esc(w.title)).join("、")}正在執行</b>` : "目前沒有工作在跑",
     `今天跑了 <b>${t.length}</b> 次` + (t.length ? `（成功 ${ok}${bad ? `、<span class="bad-text">失敗 ${bad}</span>` : ""}）` : ""),
     next ? `下一個是 <b>${when(next.next_due)}</b> 的「${esc(next.title)}」` : "",
     p,
   ].filter(Boolean).join("。") + "。";
+  // 沒安裝的訂閱工具：收在一行可以展開的說明裡，不佔版面
+  const missing = Object.entries(PROV).filter(([n, v]) => v.missing);
+  const box = $("#install-box");
+  if (!missing.length) { box.innerHTML = ""; return; }
+  const sig = missing.map(([n]) => n).join(",");
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  box.innerHTML = `<details><summary>${missing.map(([n]) => PROVIDER[n] || n).join("、")} 還沒安裝，想用訂閱帳號跑工作流的話看這裡</summary>
+    ${missing.map(([n, v]) => `<div class="inst"><b>${esc(PROVIDER[n] || n)}</b>
+      <pre>${esc(v.install.join("\n"))}</pre><div class="muted">${esc(v.login)}，然後重新整理這個頁面。</div></div>`).join("")}</details>`;
 }
 
 // ── 工具列：工作流下拉選單 ─────────────────────────
@@ -779,7 +795,7 @@ async function doExport(fmt) {
     const r = await fetch("/api/export", {method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({format: fmt, html: x.html, filename: `${x.fname}.${fmt}`})});
     if (!r.ok) throw new Error((await r.json()).error);
-    save(await r.blob(), `${x.fname}.${fmt}`);
+    save(await r.blob(), `${x.fname}.${r.headers.get("X-Export-Ext") || fmt}`);
   } catch (e) { toast(e.message || "匯出失敗", 4000); }
   finally { t.leave(); }
 }
@@ -902,7 +918,8 @@ function openEditor(w) {
   if (![...f.every.options].some(o => o.value === ev)) f.every.insertAdjacentHTML("beforeend", `<option value="${ev}">${ev} 分鐘</option>`);
   f.every.value = ev;
   f.enabled.checked = w ? w.enabled : true;
-  f.provider.innerHTML = Object.keys(PROV).map(p => `<option value="${p}">${PROVIDER[p] || p}</option>`).join("");
+  f.provider.innerHTML = Object.entries(PROV).map(([p, v]) =>
+    `<option value="${p}" ${v.ok || v.error?.includes("API_KEY") || p === w?.provider ? "" : "disabled"}>${PROVIDER[p] || p}${v.missing ? "（未安裝）" : !v.ok && v.kind === "cli" ? "（尚未支援）" : ""}</option>`).join("");
   f.provider.value = w?.provider || "lmstudio";
   fillModels(f.provider.value, w?.model || "");
   fillFallback(f.provider.value, w ? w.fallback : Object.keys(PROV).find(p => p !== f.provider.value));

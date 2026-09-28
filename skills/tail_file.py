@@ -14,7 +14,8 @@ ROOT = pathlib.Path(__file__).parent.parent
 
 def _allowed(f):
     pats = json.loads((ROOT / "config.json").read_text()).get("readable_paths", [])
-    return any(f.full_match(os.path.expanduser(p)) for p in pats)  # * 不跨目錄，** 才會
+    # {data} = 這個程式的資料夾；* 不跨目錄，** 才會
+    return any(f.full_match(os.path.expanduser(p.replace("{data}", str(ROOT)))) for p in pats)
 
 
 def run(path, lines=60):

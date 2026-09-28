@@ -1,7 +1,9 @@
 """監控面板 + API。啟動：python3 server.py"""
 import json
 import os
+import sys
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -35,23 +37,46 @@ def workflows_view():
     return out
 
 
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+def find_browser():
+    """PDF 要靠 Chromium 系的瀏覽器印；Windows 一定有 Edge，macOS / Linux 找常見的幾個。"""
+    if sys.platform == "darwin":
+        cands = [f"/Applications/{a}.app/Contents/MacOS/{a}" for a in
+                 ("Google Chrome", "Microsoft Edge", "Chromium", "Brave Browser")]
+    elif sys.platform == "win32":
+        pf = [os.environ.get(k, "") for k in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")]
+        cands = [os.path.join(b, p) for b in pf if b for p in
+                 (r"Google\Chrome\Application\chrome.exe", r"Microsoft\Edge\Application\msedge.exe")]
+    else:
+        cands = [shutil.which(n) or "" for n in
+                 ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge")]
+    return next((c for c in cands if c and os.path.exists(c)), None)
 
 
 def convert(html, fmt):
-    """把前端組好的完整 HTML 轉成 docx（textutil）或 pdf（Chrome headless），回傳 bytes。"""
+    """把前端組好的完整 HTML 轉成 Word 或 PDF，回傳 (bytes, 副檔名)。"""
     with tempfile.TemporaryDirectory() as d:
         src = pathlib.Path(d) / "report.html"
         src.write_text(html, encoding="utf-8")
         out = pathlib.Path(d) / f"report.{fmt}"
         if fmt == "docx":
-            subprocess.run(["textutil", "-convert", "docx", str(src), "-output", str(out)],
-                           check=True, capture_output=True, timeout=60)
-            return out.read_bytes()
-        if not os.path.exists(CHROME):
-            raise RuntimeError("找不到 Google Chrome，沒辦法轉 PDF；可以改用「列印 → 另存為 PDF」")
+            if sys.platform == "darwin" and shutil.which("textutil"):
+                subprocess.run(["textutil", "-convert", "docx", str(src), "-output", str(out)],
+                               check=True, capture_output=True, timeout=60)
+                return out.read_bytes(), "docx"
+            soffice = shutil.which("soffice") or shutil.which("libreoffice")
+            if soffice:
+                subprocess.run([soffice, "--headless", "--convert-to", "docx", "--outdir", d, str(src)],
+                               check=True, capture_output=True, timeout=120)
+                return out.read_bytes(), "docx"
+            # 沒有轉檔工具：輸出 Word 認得的 HTML 格式 .doc（Word、LibreOffice、Pages 都打得開）
+            doc = html.replace("<html", '<html xmlns:o="urn:schemas-microsoft-com:office:office" '
+                                       'xmlns:w="urn:schemas-microsoft-com:office:word"', 1)
+            return doc.encode("utf-8"), "doc"
+        browser = find_browser()
+        if not browser:
+            raise RuntimeError("找不到 Chrome / Edge / Chromium，沒辦法轉 PDF；可以改用「網頁」匯出再列印成 PDF")
         # Chrome headless 寫完 PDF 常常不會自己結束，所以等檔案寫好、大小穩定就直接關掉它
-        p = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--no-pdf-header-footer",
+        p = subprocess.Popen([browser, "--headless=new", "--disable-gpu", "--no-pdf-header-footer",
                               f"--user-data-dir={d}/profile", f"--print-to-pdf={out}", src.as_uri()],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
@@ -69,7 +94,7 @@ def convert(html, fmt):
         finally:
             p.kill()
             p.wait()
-        return out.read_bytes()
+        return out.read_bytes(), "pdf"
 
 
 class H(BaseHTTPRequestHandler):
@@ -88,7 +113,7 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         if u.path == "/":
-            return self.send((engine.ROOT / "dashboard.html").read_bytes(), ctype="text/html")
+            return self.send((engine.APP_DIR / "dashboard.html").read_bytes(), ctype="text/html")
         if u.path == "/api/workflows":
             return self.send(workflows_view())
         if u.path == "/api/live":
@@ -140,13 +165,16 @@ class H(BaseHTTPRequestHandler):
             if fmt not in ("docx", "pdf") or not html or len(html) > 5_000_000:
                 return self.send({"error": "格式不支援或內容太大"}, 400)
             try:
-                data = convert(html, fmt)
+                data, ext = convert(html, fmt)
             except Exception as e:
                 return self.send({"error": f"轉換失敗：{e}"}, 500)
-            name = urllib.parse.quote(str(body.get("filename") or f"report.{fmt}"))
+            base = str(body.get("filename") or "report").rsplit(".", 1)[0]
+            name = urllib.parse.quote(f"{base}.{ext}")
             self.send_response(200)
+            self.send_header("X-Export-Ext", ext)
             self.send_header("Content-Type", {"docx": "application/vnd.openxmlformats-officedocument."
-                                                      "wordprocessingml.document", "pdf": "application/pdf"}[fmt])
+                                                      "wordprocessingml.document", "doc": "application/msword",
+                                              "pdf": "application/pdf"}[ext])
             self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{name}")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
@@ -179,9 +207,17 @@ class H(BaseHTTPRequestHandler):
         self.send({"error": "not found"}, 404)
 
 
-if __name__ == "__main__":
+def serve(port=None, on_ready=None):
     engine.init_db()
     threading.Thread(target=engine.scheduler_loop, daemon=True).start()
     cfg = engine.load_config()["server"]
-    print(f"監控面板：http://{cfg['host']}:{cfg['port']}")
-    ThreadingHTTPServer((cfg["host"], cfg["port"]), H).serve_forever()
+    httpd = ThreadingHTTPServer((cfg["host"], port or cfg["port"]), H)
+    url = f"http://{cfg['host']}:{httpd.server_port}"
+    print(f"監控面板：{url}\n資料夾：{engine.ROOT}")
+    if on_ready:
+        on_ready(url)
+    httpd.serve_forever()
+
+
+if __name__ == "__main__":
+    serve()

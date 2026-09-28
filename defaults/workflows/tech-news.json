@@ -1,0 +1,17 @@
+{
+  "title": "每日科技新聞",
+  "description": "每天早上讀科技新聞 RSS，挑重點寫成繁中摘要",
+  "provider": "lmstudio",
+  "fallback": "claude",
+  "schedule": {
+    "daily": "08:00"
+  },
+  "skills": [
+    "read_rss",
+    "save_report",
+    "notify"
+  ],
+  "system": "你是使用者的新聞助理，一律用繁體中文（台灣）。",
+  "task": "1. 用 read_rss 讀 https://hnrss.org/frontpage 和 https://www.ithome.com.tw/rss 各 10 則。\n2. 挑出 5 則最值得看的，每則寫兩句話說它在講什麼、為什麼重要，附連結。\n3. 用 save_report 存成報告，標題「今日科技新聞」。\n4. 用 notify 通知我，內容是最重要那一則的一句話摘要。\n5. 最後回覆報告全文。",
+  "enabled": false
+}

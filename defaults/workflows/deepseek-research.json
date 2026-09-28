@@ -1,10 +1,8 @@
 {
   "title": "研究助理",
   "description": "手動觸發：給一個主題或網址，先上網搜尋再讀網頁，整理重點",
-  "provider": "deepseek",
-  "model": "deepseek-chat",
+  "provider": "claude",
   "fallback": "lmstudio",
-  "fallback_model": "qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive-mlx",
   "skills": [
     "web_search",
     "fetch_url",

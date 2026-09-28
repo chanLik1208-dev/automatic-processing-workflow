@@ -2,7 +2,39 @@
 
 本機跑的 AI 自動化工作流：agent + skill + 排程 + 監控頁。模型走 OpenAI 相容 API，目前接 LM Studio（本機）和 DeepSeek。純 Python 標準庫，不用裝套件。
 
-## 啟動
+## 安裝（執行檔）
+
+到 repo 的 **Releases** 下載自己平台的檔案，不需要先裝 Python：
+
+| 平台 | 檔案 |
+|---|---|
+| macOS（Apple Silicon） | `AutoWorkflow-macos-arm64` |
+| macOS（Intel） | `AutoWorkflow-macos-x64` |
+| Linux | `AutoWorkflow-linux-x64` |
+| Windows | `AutoWorkflow-windows-x64.exe` |
+
+執行後會自動打開瀏覽器。執行檔沒有程式碼簽章，第一次開要多一步：
+
+- **macOS**：`chmod +x AutoWorkflow-macos-*` 後執行；被擋就到「系統設定 → 隱私權與安全性」按「仍要開啟」，
+  或執行 `xattr -d com.apple.quarantine AutoWorkflow-macos-*`
+- **Linux**：`chmod +x AutoWorkflow-linux-x64 && ./AutoWorkflow-linux-x64`
+- **Windows**：SmartScreen 出現時按「其他資訊 → 仍要執行」
+
+資料（設定、工作流、執行紀錄、報告）放在：macOS `~/Library/Application Support/AutoWorkflow`、
+Windows `%APPDATA%\AutoWorkflow`、Linux `~/.local/share/autoworkflow`（可用環境變數 `AUTOWORKFLOW_HOME` 改位置）。
+升級時換掉執行檔即可，資料不會動。
+
+### 模型來源（至少要有一個）
+
+- **LM Studio**（本機，免費）：開啟 LM Studio、載入一個模型、在 Developer 分頁啟動 server
+- **Claude 訂閱**（Pro / Max，不需 API key）：安裝 Claude Code 並登入一次；沒裝時監控頁會顯示安裝指令
+- **ChatGPT / Gemini 訂閱**：監控頁會顯示 Codex CLI / Gemini CLI 的安裝方法（串接尚未完成）
+- **DeepSeek API**：設定環境變數 `DEEPSEEK_API_KEY`
+
+自己編譯：`pip install pyinstaller && python build.py`（Python 3.13 以上；在哪個平台跑就產生哪個平台的版本）。
+推 `v*` 標籤時 GitHub Actions 會在四個平台各自編譯、做啟動測試，再發佈到 Releases。
+
+## 從原始碼啟動
 
 ```sh
 export DEEPSEEK_API_KEY=sk-...   # 沒有也能跑，只用本機模型
