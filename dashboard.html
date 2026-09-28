@@ -24,10 +24,15 @@ body { margin: 0; background: var(--bg); color: var(--ink);
 header h1 { font-size: 22px; margin: 0; letter-spacing: .02em; }
 .summary { color: var(--soft); margin: 4px 0 16px; }
 .summary b { color: var(--ink); font-weight: 600; }
-#install-box details { margin: -8px 0 16px; font-size: 13.5px; color: var(--soft); }
-#install-box summary { cursor: pointer; color: var(--muted); }
-#install-box .inst { margin: 10px 0 0 16px; }
-#install-box pre { background: var(--tint); padding: 8px 12px; border-radius: 6px; margin: 4px 0; font: 12.5px ui-monospace, Menlo, monospace;
+#detail a, .sumrow a, #model-menu a { color: var(--run); }
+.sumrow { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; margin: 4px 0 16px; }
+.sumrow .summary { margin: 0; }
+#model-menu .mg { padding: 6px 10px 2px; font-size: 12px; color: var(--muted); letter-spacing: .05em; }
+#model-menu .mi { display: grid; grid-template-columns: 10px 1fr; gap: 8px; padding: 6px 10px; font-size: 13.5px; align-items: baseline; }
+#model-menu .mi .why { grid-column: 2; color: var(--muted); font-size: 12.5px; white-space: normal; }
+#model-menu details { grid-column: 2; font-size: 12.5px; }
+#model-menu summary { cursor: pointer; color: var(--run); }
+#model-menu pre { background: var(--tint); padding: 8px 12px; border-radius: 6px; margin: 4px 0; font: 12.5px ui-monospace, Menlo, monospace;
                    white-space: pre-wrap; }
 .bad-text { color: var(--bad); } .ok-text { color: var(--ok); } .run-text { color: var(--run); } .warn-text { color: var(--warn); }
 .muted { color: var(--muted); }
@@ -281,8 +286,9 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 <div class="wrap">
   <header>
     <h1>自動化工作流</h1>
-    <div class="summary" id="summary">讀取中…</div>
-    <div id="install-box"></div>
+    <div class="sumrow"><div class="summary" id="summary">讀取中…</div>
+      <div class="dd"><button class="ghost" data-toggle="model-menu" id="model-btn" style="padding:4px 10px;font-size:13px">模型狀態 ▾</button>
+        <div class="menu right" id="model-menu" style="min-width:320px;max-width:420px"></div></div></div>
   </header>
 
   <nav class="tabs" id="tabs"><button class="on" data-tab="wf">工作流</button><button data-tab="skills">Skills</button><button data-tab="settings">設定</button><span class="tab-ind" id="tab-ind"></span></nav>
@@ -358,13 +364,15 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
         <select name="provider"></select>
         <select name="model"></select>
       </div></div>
-      <div class="row"><label>連不上時</label><div class="inl"><select name="fallback"></select></div></div>
+      <div class="row"><label>連不上時</label><div class="inl"><select name="fallback"></select><select name="fallback_model"></select></div></div>
       <div class="row"><label>能做的事</label><div class="skills" id="ed-skills"></div></div>
       <div class="row"><label>任務說明</label><div>
         <textarea name="task" rows="8" placeholder="一步一步寫清楚要做什麼、每步用哪個能力、什麼情況才通知"></textarea>
         <div class="hint">手動執行時輸入框裡的文字，會以「額外輸入」附在最後</div></div></div>
       <details style="margin:8px 0 4px"><summary class="muted" style="cursor:pointer;font-size:13.5px">進階</summary>
         <div class="row"><label>角色設定</label><textarea name="system" rows="3"></textarea></div>
+        <div class="row"><label>單輪最多輸出</label><div class="inl"><input type="number" name="max_tokens" min="256" max="65536" style="width:110px" placeholder="預設">
+          <span class="muted" style="font-size:12.5px">tokens；留空用「設定 → 執行限制」的值</span></div></div>
         <div class="row"><label>最多步數</label><div class="inl"><input type="number" name="max_steps" min="1" max="40" style="width:90px">
           <span class="muted" style="font-size:12.5px">超過就視為失敗，避免 agent 繞圈子</span></div></div>
       </details>
@@ -436,6 +444,7 @@ const STATUS = {success: ["成功", "ok"], failed: ["失敗", "bad"], running: [
                 cancelled: ["已停止", "warn"]};
 const PROVIDER = {auto: "自動", lmstudio: "本機", deepseek: "DeepSeek", claude: "Claude 訂閱", codex: "ChatGPT 訂閱", gemini: "Gemini"};
 
+const provLabel = p => PROV[p]?.label || SETTINGS?.providers?.[p]?.label || PROVIDER[p] || p;
 function modelName(id, provider) {
   if (provider === "auto") return "自動模式";
   id = id || PROV[provider]?.default_model || "";
@@ -444,7 +453,7 @@ function modelName(id, provider) {
   if (/^deepseek-chat/.test(id)) name = "DeepSeek V3";
   else if (/^deepseek-reasoner/.test(id)) name = "DeepSeek R1";
   else if (m) name = m[1][0].toUpperCase() + m[1].slice(1) + (m[2] || "") + (m[3] ? " " + m[3].toUpperCase() : "");
-  return name ? `${name}（${PROVIDER[provider] || provider}）` : (PROVIDER[provider] || provider);
+  return name ? `${name}（${provLabel(provider)}）` : provLabel(provider);
 }
 function dur(sec) {
   if (sec == null) return "";
@@ -583,24 +592,32 @@ function renderSummary(runs) {
   const running = WFS.filter(w => w.running);
   const quota = n => { const q = USAGE?.cli_limits?.[n]; return q && q.resetsAt * 1000 > Date.now() && q.utilization != null
     ? `（${{five_hour: "5 小時", seven_day: "7 天"}[q.rateLimitType] || ""}額度 ${Math.round(q.utilization * 100)}%）` : ""; };
-  const p = Object.entries(PROV).filter(([n, v]) => !v.missing).map(([n, v]) => v.ok ? `<span class="${/9\d%|100%/.test(quota(n)) ? "warn-text" : "ok-text"}">${PROVIDER[n] || n}可用${quota(n)}</span>`
-    : `<span class="bad-text">${PROVIDER[n] || n}${/API.?KEY/i.test(v.error || "") ? "還沒設定 key" : v.kind === "cli" ? "還不能用" : "連不上"}</span>`).join("、");
-  $("#summary").innerHTML = [
+  const okList = Object.entries(PROV).filter(([, v]) => v.ok);
+  const p = okList.length ? "可用模型：" + okList.map(([n]) => `<span class="${/9\d%|100%/.test(quota(n)) ? "warn-text" : "ok-text"}">${esc(provLabel(n))}${quota(n)}</span>`).join("、") : "";
+  const off = Object.values(PROV).filter(v => !v.ok).length;
+  $("#model-btn").textContent = `模型狀態${off ? `（${off} 個不能用）` : ""} ▾`;
+  if (!menuOpen["model-menu"]) renderModelMenu(quota);
+  const anyOk = Object.values(PROV).some(v => v.ok);
+  $("#summary").innerHTML = (anyOk ? "" : `<b class="bad-text">還沒有可用的模型</b>：到「設定 → 模型來源」開啟 LM Studio、登入 Claude 訂閱，或填入 API key。 `) + [
     running.length ? `<b class="run-text">${running.map(w => esc(w.title)).join("、")}正在執行</b>` : "目前沒有工作在跑",
     `今天跑了 <b>${t.length}</b> 次` + (t.length ? `（成功 ${ok}${bad ? `、<span class="bad-text">失敗 ${bad}</span>` : ""}）` : ""),
     next ? `下一個是 <b>${when(next.next_due)}</b> 的「${esc(next.title)}」` : "",
     p,
   ].filter(Boolean).join("。") + "。";
-  // 沒安裝的訂閱工具：收在一行可以展開的說明裡，不佔版面
-  const missing = Object.entries(PROV).filter(([n, v]) => v.missing);
-  const box = $("#install-box");
-  if (!missing.length) { box.innerHTML = ""; return; }
-  const sig = missing.map(([n]) => n).join(",");
-  if (box.dataset.sig === sig) return;
-  box.dataset.sig = sig;
-  box.innerHTML = `<details><summary>${missing.map(([n]) => PROVIDER[n] || n).join("、")} 還沒安裝，想用訂閱帳號跑工作流的話看這裡</summary>
-    ${missing.map(([n, v]) => `<div class="inst"><b>${esc(PROVIDER[n] || n)}</b>
-      <pre>${esc(v.install.join("\n"))}</pre><div class="muted">${esc(v.login)}，然後重新整理這個頁面。</div></div>`).join("")}</details>`;
+}
+function renderModelMenu(quota) {
+  const item = (n, v, dot, why, extra = "") => `<div class="mi"><span class="dot" style="background:var(--${dot})"></span>
+    <span>${esc(provLabel(n))}${quota(n)}</span>${why ? `<span class="why">${why}</span>` : ""}${extra}</div>`;
+  const groups = [
+    ["可用", Object.entries(PROV).filter(([, v]) => v.ok), ([n, v]) => item(n, v, "ok", "")],
+    ["離線或還不能用", Object.entries(PROV).filter(([, v]) => !v.ok && !v.missing), ([n, v]) =>
+      item(n, v, "bad", /API.?KEY/i.test(v.error || "") ? `還沒設定 API key：到 <a href="#" data-goto="settings">設定 → 模型來源</a> 填入` : esc(v.error || "連不上"))],
+    ["還沒安裝", Object.entries(PROV).filter(([, v]) => v.missing), ([n, v]) =>
+      item(n, v, "muted", "用訂閱帳號跑工作流需要先安裝",
+        `<details><summary>怎麼安裝</summary><pre>${esc((v.install || []).join("\n"))}</pre><div>${esc(v.login || "")}，然後重新整理。</div></details>`)],
+  ];
+  $("#model-menu").innerHTML = groups.filter(([, xs]) => xs.length).map(([t, xs, f]) => `<div class="mg">${t}</div>` + xs.map(f).join("")).join("")
+    + `<div class="sep"></div><span class="plain" data-goto="settings">到設定管理模型來源…</span>`;
 }
 
 // ── 工具列：工作流下拉選單 ─────────────────────────
@@ -732,7 +749,8 @@ function actRow(s, withRaw) {
       (withRaw ? `<details style="margin:0 0 0 26px"><summary>原始內容</summary><pre>${esc(s.input)}</pre><pre>${esc(s.output)}</pre></details>` : "");
   }
   const fb = (s.output || "").match(/→ 改用備援 (\S+)/);
-  const head = fb ? `${PROVIDER[s.name] || s.name}出錯，改用 ${PROVIDER[fb[1]] || fb[1]}` : s.name === "cancelled" ? "你按了停止" : "沒有完成";
+  if (s.name === "cancelled") return `<div class="act-row"><span class="ic" style="color:var(--warn)">■</span><span>你按了停止</span><span></span></div>`;
+  const head = fb ? `${provLabel(s.name)}出錯，改用 ${provLabel(fb[1])}` : "沒有完成";
   const rawErr = /^\{"raw"/.test(s.input || "") ? parseArgs(s.input).raw : null;
   const tb = rawErr ? "" : s.input || (/^Traceback/.test(s.output || "") ? s.output : "");
   return `<div class="act-row"><span class="ic bad">✕</span><span>${head} <span class="res">— ${esc(humanError(fb ? (s.output || "").split("\n")[0] : s.output))}</span></span><span></span></div>` +
@@ -778,8 +796,25 @@ function timeline(steps) {
 }
 
 let shownRun = null, swapToken = 0;
+function welcomeHtml() {
+  const ok = Object.entries(PROV).filter(([, v]) => v.ok).map(([n]) => provLabel(n));
+  return `<p class="t">開始使用</p>
+    <ol style="padding-left:1.3em;line-height:1.9;margin:10px 0 18px">
+      <li>${ok.length ? `模型來源已經有 <b>${ok.map(esc).join("、")}</b> 可用。` : `先到 <a href="#" data-goto="settings">設定 → 模型來源</a> 準備至少一個模型（LM Studio、Claude 訂閱或 API key）。`}</li>
+      <li>挑一條工作流按「執行」，旁邊「現在」區會即時顯示它在做什麼。</li>
+      <li>想讓它照你的方法做事：到 <a href="#" data-goto="skills">Skills</a> 匯入或用對話建立一個 skill。</li>
+    </ol>
+    <div class="section">現有的工作流</div>
+    ${WFS.map(w => `<div class="run" style="grid-template-columns:1fr auto;cursor:default">
+      <div class="main"><div class="t">${esc(w.title)}</div><div class="m">${esc(w.description || "")}</div></div>
+      <button data-welcome-run="${esc(w.name)}">${isManual(w.schedule) ? "執行" : "立即執行"}</button></div>`).join("")}`;
+}
 async function loadDetail() {
-  if (!selRun) { $("#detail").innerHTML = '<div class="empty">還沒有執行紀錄</div>'; shownRun = null; return; }
+  if (!selRun) {
+    const html = selWf ? '<div class="empty">這條工作流還沒有執行紀錄，按上面的「立即執行」試試看</div>' : welcomeHtml();
+    if (changed("detail", ["welcome", selWf, html])) $("#detail").innerHTML = html;
+    shownRun = null; return;
+  }
   const want = selRun;
   const d = await j("/api/runs/" + want);
   if (want !== selRun) return;
@@ -999,7 +1034,15 @@ function fillFallback(provider, current) {
   // 不能用的來源（沒安裝、還沒支援、連不上）不能選成備援；但已經存的值照樣顯示，免得被悄悄改掉
   F().fallback.innerHTML = `<option value="">直接失敗</option>` + Object.keys(PROV).filter(p => p !== provider)
     .map(p => { const ok = PROV[p].ok || /API.?KEY/i.test(PROV[p].error || "");
-      return `<option value="${p}" ${p === current ? "selected" : ""} ${ok || p === current ? "" : "disabled"}>改用 ${esc(PROV[p].label || PROVIDER[p] || p)}${ok ? "" : "（不能用）"}</option>`; }).join("");
+      return `<option value="${p}" ${p === current ? "selected" : ""} ${ok || p === current ? "" : "disabled"}>改用 ${esc(provLabel(p))}${ok ? "" : "（不能用）"}</option>`; }).join("");
+}
+function fillFallbackModels(provider, current) {
+  const sel = F().fallback_model;
+  if (!provider) { sel.innerHTML = ""; sel.style.display = "none"; return; }
+  sel.style.display = "";
+  const models = (PROV[provider]?.models || []).filter(m => !/embed/i.test(m));
+  if (current && !models.includes(current)) models.unshift(current);
+  sel.innerHTML = `<option value="">用它的預設模型</option>` + models.map(m => `<option value="${esc(m)}" ${m === current ? "selected" : ""}>${esc(m)}</option>`).join("");
 }
 function syncSched() {
   const k = F().sched_kind.value;
@@ -1023,7 +1066,7 @@ function openEditor(w, pre) {
   f.every.value = ev;
   f.enabled.checked = w ? w.enabled : true;
   f.provider.innerHTML = `<option value="auto">自動（依優先順序和用量挑）</option>` + Object.entries(PROV).map(([p, x]) =>
-    `<option value="${p}" ${x.ok || /API.?KEY/i.test(x.error || "") || p === v?.provider ? "" : "disabled"}>${PROVIDER[p] || p}${x.missing ? "（未安裝）" : !x.ok && x.kind === "cli" ? "（尚未支援）" : ""}</option>`).join("");
+    `<option value="${p}" ${x.ok || /API.?KEY/i.test(x.error || "") || p === v?.provider ? "" : "disabled"}>${esc(provLabel(p))}${x.missing ? "（未安裝）" : !x.ok && x.kind === "cli" ? "（尚未支援）" : ""}</option>`).join("");
   f.provider.value = v?.provider || firstProvider();
   fillModels(f.provider.value, v?.model || "");
   fillFallback(f.provider.value, w ? w.fallback : Object.keys(PROV).find(p => p !== f.provider.value && PROV[p].ok) || "");
@@ -1032,7 +1075,9 @@ function openEditor(w, pre) {
   $("#ed-skills").innerHTML = SKILLS.filter(sp => sp.kind === "tool").map(sp => `<label title="${esc(sp.description)}"><input type="checkbox" value="${esc(sp.name)}" ${have.has(sp.name) ? "checked" : ""}>
     ${esc(SKILL_TEXT[sp.name] ? describe(sp.name, {})[0] : sp.description.slice(0, 14) || sp.name)} <small>${esc(sp.name)}</small></label>`).join("");
   f.task.value = v?.task || ""; f.system.value = v?.system || "你是自動執行任務的 agent，一律用繁體中文（台灣）。";
-  f.max_steps.value = v?.max_steps || 12;
+  f.max_steps.value = v?.max_steps || SETTINGS?.limits?.max_steps || 12;
+  f.max_tokens.value = v?.max_tokens || "";
+  fillFallbackModels(f.fallback.value, v?.fallback_model || "");
   syncSched();
   openEditor2();
   f.title.focus();
@@ -1040,7 +1085,8 @@ function openEditor(w, pre) {
 function firstProvider() { return ["claude", "lmstudio", "deepseek"].find(p => PROV[p]?.ok) || "lmstudio"; }
 $("#ed-form").addEventListener("change", e => {
   if (e.target.name === "sched_kind") syncSched();
-  if (e.target.name === "provider") { fillModels(e.target.value, ""); fillFallback(e.target.value, F().fallback.value); }
+  if (e.target.name === "provider") { fillModels(e.target.value, ""); fillFallback(e.target.value, F().fallback.value); fillFallbackModels(F().fallback.value, ""); }
+  if (e.target.name === "fallback") fillFallbackModels(e.target.value, "");
 });
 let editorOpen = false;
 function openEditor2() {
@@ -1074,6 +1120,7 @@ $("#ed-form").addEventListener("submit", async e => {
     schedule: k === "daily" ? {daily: f.daily.value} : k === "every" ? {every_minutes: +f.every.value} : {},
     skills: [...$("#ed-skills").querySelectorAll("input:checked")].map(i => i.value),
     task: f.task.value, system: f.system.value, max_steps: +f.max_steps.value,
+    max_tokens: f.max_tokens.value ? +f.max_tokens.value : undefined, fallback_model: f.fallback_model.value || undefined,
   };
   $("#ed-save").disabled = true;
   const r = await post(editing ? `/api/workflows/${encodeURIComponent(editing)}/save` : "/api/workflows/new", body);
@@ -1092,7 +1139,7 @@ function openMenu(m) {
   fade(m, {opacity: [0, 1]}, T.fadeFast);
   move(m, {transform: ["translateY(-4px) scale(.95)", "none"]}, S.menu);
   // 容器先打開，項目才倒進來（feel.md §6）：從 Dv 開始錯開 0.03
-  [...m.querySelectorAll(".item, .plain")].forEach((it, i) => {
+  [...m.querySelectorAll(".item, .plain, .mi")].slice(0, 12).forEach((it, i) => {
     fade(it, {opacity: [0, 1]}, {...T.fadeFast, delay: 200 + i * 30});
     move(it, {transform: ["translateY(-3px)", "none"]}, {...S.micro, delay: 200 + i * 30});
   });
@@ -1514,6 +1561,15 @@ async function builderSend() {
 
 document.addEventListener("click", async e => {
   const tb = e.target.closest("[data-tab]"); if (tb) { switchTab(tb.dataset.tab); return; }
+  const go = e.target.closest("[data-goto]"); if (go) { e.preventDefault(); closeMenus(); switchTab(go.dataset.goto); return; }
+  const wr = e.target.closest("[data-welcome-run]");
+  if (wr) {                                         // 從引擎頁直接執行：選中那條，手動的就把輸入框交給使用者
+    selWf = wr.dataset.welcomeRun; lastSig = {}; await tick();
+    const w = WF[selWf];
+    if (isManual(w.schedule)) { document.querySelector("#wf-actions .runin")?.focus(); toast("在上面的輸入框寫下要處理什麼，再按「立即執行」"); }
+    else document.querySelector("#wf-actions [data-run]")?.click();
+    return;
+  }
   const sk = e.target.closest("[data-sk]"); if (sk) { showSkill(sk.dataset.sk); return; }
   const imp = e.target.closest("[data-imp]");
   if (imp) { closeMenus(); imp.dataset.imp === "file" ? $("#sk-file").click() : showGithub(); return; }

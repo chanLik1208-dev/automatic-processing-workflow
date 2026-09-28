@@ -3,6 +3,10 @@ import re
 
 import engine
 
+LABELS = {"tick_seconds": "排程檢查間隔", "server.port": "監控頁 port", "limits.max_tokens": "單輪最多輸出",
+          "limits.request_timeout": "API 逾時", "limits.cli_timeout": "訂閱 CLI 逾時", "limits.max_steps": "最多幾輪",
+          "limits.fail_streak": "連續失敗幾次叫它停", "limits.stall_seconds": "卡住提示", "search.limit": "搜尋筆數",
+          "fetch.max_chars": "網頁最多讀幾字"}
 NUM = {  # 路徑: (最小, 最大)
     "tick_seconds": (5, 3600), "server.port": (1024, 65535),
     "limits.max_tokens": (256, 65536), "limits.request_timeout": (30, 3600), "limits.cli_timeout": (30, 7200),
@@ -44,9 +48,9 @@ def save(body):
             try:
                 v = int(v)
             except (TypeError, ValueError):
-                raise ValueError(f"{path} 要是數字")
+                raise ValueError(f"「{LABELS.get(path, path)}」要填數字")
             if not lo <= v <= hi:
-                raise ValueError(f"{path} 要在 {lo}–{hi} 之間")
+                raise ValueError(f"「{LABELS.get(path, path)}」要在 {lo}–{hi} 之間")
             _set(raw, path, v)
     for path in BOOL:
         v = _get(body, path)

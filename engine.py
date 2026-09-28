@@ -758,7 +758,7 @@ def ping_provider(name):
             ids = [m["id"] for m in json.loads(r.read()).get("data", [])]
         return {"ok": True, "models": ids, "default_model": p["default_model"], "label": p.get("label")}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": str(e), "label": (load_config()["providers"].get(name) or {}).get("label")}
 
 
 def strip_think(text):

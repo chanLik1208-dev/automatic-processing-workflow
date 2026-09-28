@@ -30,6 +30,7 @@ def workflows_view():
             out.append({
                 "name": name, "title": wf.get("title", name), "description": wf.get("description", ""),
                 "system": wf.get("system", ""), "task": wf.get("task", ""), "max_steps": wf.get("max_steps"),
+                "max_tokens": wf.get("max_tokens"), "fallback_model": wf.get("fallback_model"),
                 "provider": wf.get("provider"), "model": wf.get("model"), "fallback": wf.get("fallback"),
                 "schedule": wf.get("schedule"), "skills": wf.get("skills", []), "enabled": wf["enabled"],
                 "running": name in engine._running,

@@ -5,7 +5,8 @@
       "api_key_env": "DEEPSEEK_API_KEY",
       "default_model": "deepseek-chat",
       "needs_key": true,
-      "label": "DeepSeek"
+      "label": "DeepSeek",
+      "enabled": false
     },
     "lmstudio": {
       "base_url": "http://localhost:1234/v1",
