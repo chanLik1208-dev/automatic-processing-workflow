@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>自動化工作流</title>
+<style>
+:root {
+  --bg: #f5f4f0; --panel: #ffffff; --ink: #1c1c1a; --soft: #4a4a45; --muted: #85857d; --line: #e4e2dc;
+  --ok: #1d7f47; --bad: #bf3a2e; --run: #2a5fc4; --warn: #a86d12; --tint: #f0efea; --run-tint: #eaf0fb;
+  --shadow: 0 8px 28px rgba(0,0,0,.12), 0 2px 6px rgba(0,0,0,.06);
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --soft: #c4c3bc; --muted: #8d8c85; --line: #31312d;
+          --ok: #52c186; --bad: #ee6d61; --run: #7ba4f2; --warn: #e0a84a; --tint: #262623; --run-tint: #1c2537;
+          --shadow: 0 10px 32px rgba(0,0,0,.5), 0 2px 6px rgba(0,0,0,.3); }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+       font: 15px/1.65 -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; }
+.wrap { max-width: 1320px; margin: 0 auto; padding: 22px 20px 60px; }
+header h1 { font-size: 22px; margin: 0; letter-spacing: .02em; }
+.summary { color: var(--soft); margin: 4px 0 16px; }
+.summary b { color: var(--ink); font-weight: 600; }
+.bad-text { color: var(--bad); } .ok-text { color: var(--ok); } .run-text { color: var(--run); } .warn-text { color: var(--warn); }
+.muted { color: var(--muted); }
+h2 { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: .08em; margin: 0 0 10px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+button, .btn { padding: 7px 14px; border: 0; border-radius: 8px; background: var(--ink); color: var(--bg); cursor: pointer;
+         font: inherit; font-size: 13.5px; white-space: nowrap; }
+button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+button.ghost:hover { background: var(--tint); }
+button:disabled { opacity: .35; cursor: default; }
+input[type=text], input[type=time], input[type=number], select, textarea {
+  padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink);
+  font: inherit; font-size: 14px; min-width: 0; }
+textarea { width: 100%; resize: vertical; line-height: 1.6; }
+
+/* ── 工具列：下拉選單 + 選中的工作流 ── */
+.bar { display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 20px; flex-wrap: wrap; }
+.dd { position: relative; }
+.dd-btn { display: flex; align-items: center; gap: 8px; background: var(--tint); color: var(--ink); padding: 8px 12px;
+          font-weight: 600; font-size: 15px; min-width: 220px; justify-content: space-between; }
+.dd-btn .caret { color: var(--muted); font-size: 11px; }
+.menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 20; background: var(--panel); border: 1px solid var(--line);
+        border-radius: 10px; box-shadow: var(--shadow); padding: 6px; min-width: 100%; display: none; }
+.menu.open { display: block; }
+.menu.right { left: auto; right: 0; min-width: 180px; }
+.menu .item { display: grid; grid-template-columns: 10px 1fr auto; gap: 10px; align-items: center; padding: 8px 10px;
+              border-radius: 7px; cursor: pointer; white-space: nowrap; }
+.menu .item:hover, .menu .item.cur { background: var(--tint); }
+.menu .item .sub { color: var(--muted); font-size: 12.5px; }
+.menu .sep { height: 1px; background: var(--line); margin: 6px 4px; }
+.menu .plain { display: block; padding: 8px 12px; border-radius: 7px; cursor: pointer; font-size: 14px; }
+.menu .plain:hover { background: var(--tint); }
+.menu .plain.danger { color: var(--bad); }
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
+.info { flex: 1; min-width: 200px; color: var(--soft); font-size: 13.5px; line-height: 1.5; }
+.info .d { color: var(--ink); }
+.switch { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--soft); cursor: pointer; user-select: none; }
+.switch input { display: none; }
+.switch .tr { width: 32px; height: 18px; border-radius: 9px; background: var(--line); position: relative; transition: background .2s; }
+.switch .tr::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+                     background: var(--panel); transition: transform .2s cubic-bezier(.2,.8,.2,1); box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+.switch input:checked + .tr { background: var(--ok); }
+.switch input:checked + .tr::after { transform: translateX(14px); }
+.bar .runin { width: 220px; }
+@media (max-width: 760px) { .bar .runin { width: 100%; order: 5; } .dd-btn { min-width: 0; } }
+
+/* ── 現在 ── */
+#now:empty { display: none; }
+#now { margin-bottom: 20px; }
+.live { background: var(--panel); border: 1px solid var(--run); border-radius: 12px; padding: 16px 20px; margin-bottom: 12px; }
+.live-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.live-head .t { font-size: 17px; font-weight: 600; }
+.live-head .m { color: var(--muted); font-size: 13px; }
+.track { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 10px; align-items: center; }
+.track .s { font-size: 12.5px; padding: 3px 10px; border-radius: 999px; background: var(--tint); color: var(--soft); }
+.track .s.err { color: var(--bad); }
+.track .s.cur { background: var(--run-tint); color: var(--run); font-weight: 600; }
+.track .arrow { color: var(--muted); font-size: 11px; }
+.doing { display: flex; gap: 10px; align-items: center; font-size: 16px; }
+.pulse { width: 10px; height: 10px; border-radius: 50%; background: var(--run); flex: none; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity: .35; transform: scale(.85); } 50% { opacity: 1; transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .pulse, .switch .tr::after { animation: none; transition: none; } }
+.doing .sec { color: var(--muted); font-size: 13px; }
+.stream { margin-top: 10px; background: var(--tint); border-radius: 8px; padding: 12px 14px; max-height: 240px; overflow: auto;
+          white-space: pre-wrap; word-break: break-word; font-size: 13.5px; line-height: 1.7; color: var(--soft); }
+.stream-label { font-size: 12px; color: var(--muted); margin-top: 10px; }
+
+/* ── 紀錄 + 詳情 ── */
+.grid { display: grid; grid-template-columns: 390px 1fr; gap: 20px; align-items: start; }
+@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } .wrap { padding: 16px 16px 40px; } }
+.run { display: grid; grid-template-columns: 12px 1fr auto; gap: 10px; align-items: center; padding: 10px 14px;
+       border-bottom: 1px solid var(--line); cursor: pointer; }
+.run:last-child { border-bottom: 0; }
+.run:hover { background: var(--tint); }
+.run.sel { background: var(--tint); box-shadow: inset 3px 0 0 var(--run); }
+.run .main { min-width: 0; }
+.run .main .t { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run .main .m { color: var(--muted); font-size: 12.5px; }
+.run .r { color: var(--muted); font-size: 12.5px; text-align: right; }
+.more { text-align: center; padding: 8px; font-size: 13px; color: var(--muted); cursor: pointer; }
+#detail { padding: 22px 26px; }
+#detail .t { font-size: 19px; font-weight: 600; margin: 0; }
+#detail .m { color: var(--muted); font-size: 13.5px; margin: 2px 0 16px; }
+.section { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: .06em; margin: 22px 0 8px; }
+.result { max-width: 80ch; }
+.result h1, .result h2, .result h3, .result h4 { color: var(--ink); letter-spacing: 0; margin: 1.2em 0 .4em; line-height: 1.4; }
+.result h1 { font-size: 19px; } .result h2 { font-size: 17px; } .result h3, .result h4 { font-size: 15.5px; }
+.result p { margin: .5em 0; }
+.result ul, .result ol { padding-left: 1.4em; margin: .4em 0; }
+.result li { margin: .2em 0; }
+.result a { color: var(--run); word-break: break-all; }
+.result code { background: var(--tint); padding: 1px 5px; border-radius: 4px; font-size: .88em; }
+.result pre { background: var(--tint); padding: 12px; border-radius: 8px; overflow: auto; font-size: 12.5px; line-height: 1.55; }
+.result pre code { background: none; padding: 0; }
+.result table { border-collapse: collapse; font-size: 13.5px; margin: .6em 0; display: block; overflow-x: auto; }
+.result th, .result td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
+.result hr { border: 0; border-top: 1px solid var(--line); margin: 1.2em 0; }
+.errbox { background: var(--tint); border-left: 3px solid var(--bad); padding: 10px 14px; border-radius: 6px; }
+.steps { list-style: none; padding: 0; margin: 0; }
+.steps li { position: relative; padding: 0 0 14px 26px; }
+.steps li::before { content: ""; position: absolute; left: 6px; top: 9px; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.steps li::after { content: ""; position: absolute; left: 10px; top: 22px; bottom: 2px; width: 1px; background: var(--line); }
+.steps li:last-child::after { display: none; }
+.steps li.think::before { background: var(--run); }
+.steps li.tool::before { background: var(--ok); }
+.steps li.error::before { background: var(--bad); }
+.steps .h { font-weight: 500; }
+.steps .h small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+.steps .sub { color: var(--soft); font-size: 13.5px; }
+.steps details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+.steps pre, .raw pre { background: var(--tint); padding: 10px; border-radius: 6px; white-space: pre-wrap; word-break: break-word;
+             font: 12px/1.5 ui-monospace, Menlo, monospace; max-height: 300px; overflow: auto; margin: 6px 0 0; }
+details.raw { margin-top: 22px; color: var(--muted); font-size: 13px; }
+.empty { color: var(--muted); padding: 40px 20px; text-align: center; }
+
+/* ── 編輯表單 ── */
+dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--ink); padding: 0;
+         width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 48px); box-shadow: var(--shadow); }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+.dlg-h { padding: 18px 22px 0; font-size: 18px; font-weight: 600; }
+.dlg-b { padding: 8px 22px; overflow: auto; }
+.dlg-f { padding: 14px 22px 18px; display: flex; gap: 8px; justify-content: flex-end; align-items: center; border-top: 1px solid var(--line); }
+.dlg-f .err { flex: 1; color: var(--bad); font-size: 13.5px; }
+.row { display: grid; grid-template-columns: 96px 1fr; gap: 12px; align-items: start; margin: 12px 0; }
+.row > label { color: var(--soft); font-size: 13.5px; padding-top: 8px; }
+.row .inl { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.row .inl > select, .row .inl > input { flex: 0 1 auto; }
+.row .full { width: 100%; }
+.row .hint { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+.skills { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 4px 12px; }
+.skills label { display: flex; gap: 6px; align-items: baseline; font-size: 14px; cursor: pointer; padding: 3px 0; }
+.skills small { color: var(--muted); font-size: 11.5px; }
+@media (max-width: 600px) { .row { grid-template-columns: 1fr; gap: 4px; } .row > label { padding-top: 0; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>自動化工作流</h1>
+    <div class="summary" id="summary">讀取中…</div>
+  </header>
+
+  <div class="panel bar" id="bar">
+    <div class="dd" id="wf-dd">
+      <button class="dd-btn" data-toggle="wf-menu"><span id="dd-label">全部工作流</span><span class="caret">▼</span></button>
+      <div class="menu" id="wf-menu"></div>
+    </div>
+    <div class="info" id="wf-info"></div>
+    <span id="wf-actions" style="display:contents"></span>
+    <div class="dd">
+      <button class="ghost" data-toggle="more-menu" aria-label="更多">⋯</button>
+      <div class="menu right" id="more-menu"></div>
+    </div>
+  </div>
+
+  <section id="now"></section>
+
+  <div class="grid">
+    <section>
+      <h2 id="runs-title">最近的執行</h2>
+      <div class="panel" id="runs"></div>
+    </section>
+    <section>
+      <h2>內容</h2>
+      <div class="panel" id="detail"><div class="empty">還沒有執行紀錄</div></div>
+    </section>
+  </div>
+</div>
+
+<dialog id="editor">
+  <form method="dialog" id="ed-form">
+    <div class="dlg-h" id="ed-title">編輯工作流</div>
+    <div class="dlg-b">
+      <div class="row"><label>名稱</label><input type="text" class="full" name="title" required></div>
+      <div class="row" id="ed-name-row"><label>代號</label><div>
+        <input type="text" class="full" name="name" placeholder="例如 disk-watch" pattern="[a-z0-9][a-z0-9-]*">
+        <div class="hint">英文小寫、數字、連字號，建立後不能改；也是檔名</div></div></div>
+      <div class="row"><label>說明</label><input type="text" class="full" name="description" placeholder="一句話說它解決什麼問題"></div>
+      <div class="row"><label>什麼時候跑</label><div class="inl">
+        <select name="sched_kind">
+          <option value="manual">手動執行</option><option value="daily">每天固定時間</option><option value="every">每隔一段時間</option>
+        </select>
+        <input type="time" name="daily" value="08:00">
+        <span class="inl" id="ed-every"><select name="every">
+          <option value="15">15 分鐘</option><option value="30">30 分鐘</option><option value="60">1 小時</option>
+          <option value="120">2 小時</option><option value="360">6 小時</option><option value="720">12 小時</option>
+        </select></span>
+        <label class="switch" id="ed-enabled"><input type="checkbox" name="enabled"><span class="tr"></span>啟用排程</label>
+      </div></div>
+      <div class="row"><label>模型</label><div class="inl">
+        <select name="provider"></select>
+        <select name="model"></select>
+      </div></div>
+      <div class="row"><label>連不上時</label><div class="inl"><select name="fallback"></select></div></div>
+      <div class="row"><label>能做的事</label><div class="skills" id="ed-skills"></div></div>
+      <div class="row"><label>任務說明</label><div>
+        <textarea name="task" rows="8" placeholder="一步一步寫清楚要做什麼、每步用哪個能力、什麼情況才通知"></textarea>
+        <div class="hint">手動執行時輸入框裡的文字，會以「額外輸入」附在最後</div></div></div>
+      <details style="margin:8px 0 4px"><summary class="muted" style="cursor:pointer;font-size:13.5px">進階</summary>
+        <div class="row"><label>角色設定</label><textarea name="system" rows="3"></textarea></div>
+        <div class="row"><label>最多步數</label><div class="inl"><input type="number" name="max_steps" min="1" max="40" style="width:90px">
+          <span class="muted" style="font-size:12.5px">超過就視為失敗，避免 agent 繞圈子</span></div></div>
+      </details>
+    </div>
+    <div class="dlg-f"><span class="err" id="ed-err"></span>
+      <button type="button" class="ghost" id="ed-cancel">取消</button><button type="submit" id="ed-save">儲存</button></div>
+  </form>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let WF = {}, WFS = [], PROV = {}, SKILLS = [], selWf = null, selRun = null, showAll = false, lastSig = {}, editing = null;
+
+// ── 白話化 ─────────────────────────────────────────
+const STATUS = {success: ["成功", "ok"], failed: ["失敗", "bad"], running: ["執行中", "run"], interrupted: ["中斷", "warn"]};
+const PROVIDER = {lmstudio: "本機", deepseek: "DeepSeek"};
+
+function modelName(id, provider) {
+  id = id || PROV[provider]?.default_model || "";
+  const m = id.match(/^([a-z]+)([\d.]*)[-_]?(\d+(?:\.\d+)?b)?/i);
+  let name = id;
+  if (/^deepseek-chat/.test(id)) name = "DeepSeek V3";
+  else if (/^deepseek-reasoner/.test(id)) name = "DeepSeek R1";
+  else if (m) name = m[1][0].toUpperCase() + m[1].slice(1) + (m[2] || "") + (m[3] ? " " + m[3].toUpperCase() : "");
+  return name ? `${name}（${PROVIDER[provider] || provider}）` : (PROVIDER[provider] || provider);
+}
+function dur(sec) {
+  if (sec == null) return "";
+  sec = Math.round(sec);
+  if (sec < 60) return `${sec} 秒`;
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m < 60 ? `${m} 分${s ? " " + s + " 秒" : ""}` : `${Math.floor(m/60)} 小時 ${m%60} 分`;
+}
+function when(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000), now = new Date(), diff = (now - d) / 1000;
+  const hm = d.toLocaleTimeString("zh-TW", {hour: "2-digit", minute: "2-digit", hour12: false});
+  if (diff >= 0 && diff < 60) return "剛剛";
+  if (diff >= 0 && diff < 3600) return `${Math.floor(diff/60)} 分鐘前`;
+  const day = new Date(d); day.setHours(0,0,0,0); const today = new Date(); today.setHours(0,0,0,0);
+  const dd = Math.round((day - today) / 86400000);
+  return (dd === 0 ? "今天 " : dd === -1 ? "昨天 " : dd === 1 ? "明天 " : `${d.getMonth()+1}/${d.getDate()} `) + hm;
+}
+const isManual = s => !s || (!s.daily && !s.every_minutes);
+function schedText(s) {
+  if (isManual(s)) return "手動執行";
+  if (s.daily) return `每天 ${s.daily}`;
+  return s.every_minutes % 60 === 0 ? `每 ${s.every_minutes/60} 小時` : `每 ${s.every_minutes} 分鐘`;
+}
+function humanError(e) {
+  e = e || "";
+  if (/DEEPSEEK_API_KEY/.test(e)) return "DeepSeek 還沒設定 API key，所以連不上。";
+  if (/timed out/i.test(e)) return "模型太久沒有回應（逾時）。通常是讀進去的內容太多。";
+  if (/max_steps/.test(e)) return "步驟用完了還沒做完，agent 可能在繞圈子。";
+  if (/Connection refused|URLError/.test(e)) return "連不上模型伺服器，LM Studio 可能沒開。";
+  return e;
+}
+function parseArgs(a) { try { return typeof a === "string" ? JSON.parse(a || "{}") : (a || {}); } catch { return {}; } }
+const base = p => String(p || "").split("/").filter(Boolean).pop() || p;
+const host = u => { try { const x = new URL(u); return x.host + (x.pathname.length > 1 ? x.pathname : ""); } catch { return u; } };
+
+const SKILL_TEXT = {
+  read_rss:        a => ["讀取新聞來源", host(a.url)],
+  fetch_url:       a => ["打開網頁", host(a.url)],
+  http_check:      a => ["檢查網站是否正常", host(a.url)],
+  system_status:   a => ["檢查這台電腦的狀態", (a.processes || []).length ? "確認 " + a.processes.join("、") + " 有沒有在跑" : ""],
+  tail_file:       a => ["讀取檔案", base(a.path)],
+  use_skill:       a => ["載入知識", a.skill],
+  read_skill_file: a => ["翻閱章節", `${a.skill} / ${base(a.path)}`],
+  save_report:     a => ["存成報告", `「${a.title || ""}」`],
+  notify:          a => ["跳通知給你", `「${a.message || ""}」`],
+  create_workflow: a => ["建立新的工作流", a.name],
+};
+function describe(name, args) {
+  const f = SKILL_TEXT[name]; const a = parseArgs(args);
+  return f ? f(a) : [`使用 ${name}`, ""];
+}
+function resultSummary(name, out) {
+  out = out || "";
+  if (out.startsWith("[skill 錯誤]")) return {err: true, text: out.replace("[skill 錯誤]", "出錯：")};
+  if (/^(找不到|這個路徑不|沒有這個|只接受)/.test(out)) return {err: true, text: out.split("\n")[0].slice(0, 120)};
+  if (name === "read_rss") return {text: `拿到 ${(out.match(/^\d+\. /gm) || []).length} 則`};
+  if (name === "http_check") return {err: !out.startsWith("OK"), text: out.split("\n")[0].replace(/^(OK|DOWN|PROBLEM) \S+：/, m => m.startsWith("OK") ? "正常，" : "異常，")};
+  if (name === "system_status") return {text: out.split("\n").slice(0, 1).join("")};
+  if (name === "save_report") return {text: "存在 " + base(out)};
+  if (name === "notify") return {text: "已送出"};
+  return {text: `${out.length.toLocaleString()} 字`};
+}
+
+// ── 小型 Markdown ────────────────────────────────
+function md(src) {
+  const inline = s => esc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/(^|[\s(（])(https?:\/\/[^\s<)）]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+  const lines = String(src || "").replace(/\r/g, "").split("\n"); let html = "", i = 0;
+  while (i < lines.length) {
+    const l = lines[i];
+    if (/^```/.test(l)) { let code = []; i++; while (i < lines.length && !/^```/.test(lines[i])) code.push(lines[i++]); i++;
+      html += `<pre><code>${esc(code.join("\n"))}</code></pre>`; continue; }
+    if (/^\s*\|.*\|\s*$/.test(l) && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i+1] || "")) {
+      const row = r => r.trim().replace(/^\||\|$/g, "").split("|").map(c => inline(c.trim()));
+      const head = row(l); i += 2; let body = "";
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) body += "<tr>" + row(lines[i++]).map(c => `<td>${c}</td>`).join("") + "</tr>";
+      html += `<table><tr>${head.map(c => `<th>${c}</th>`).join("")}</tr>${body}</table>`; continue; }
+    const h = l.match(/^(#{1,4})\s+(.*)/); if (h) { html += `<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`; i++; continue; }
+    if (/^\s*(---|\*\*\*)\s*$/.test(l)) { html += "<hr>"; i++; continue; }
+    if (/^\s*([-*]|\d+\.)\s+/.test(l)) {
+      const ol = /^\s*\d+\./.test(l); let items = [];
+      while (i < lines.length && /^\s*([-*]|\d+\.)\s+/.test(lines[i])) {
+        let it = lines[i++].replace(/^\s*([-*]|\d+\.)\s+/, "");
+        while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !/^\s*([-*]|\d+\.)\s+/.test(lines[i])) it += "\u0000" + lines[i++].trim();
+        items.push(it); }
+      html += (ol ? "<ol>" : "<ul>") + items.map(t => `<li>${t.split("\u0000").map(inline).join("<br>")}</li>`).join("") + (ol ? "</ol>" : "</ul>"); continue; }
+    if (!l.trim()) { i++; continue; }
+    let para = [l]; i++;
+    while (i < lines.length && lines[i].trim() && !/^(#{1,4}\s|```|\s*([-*]|\d+\.)\s|\s*\|)/.test(lines[i])) para.push(lines[i++]);
+    html += `<p>${para.map(inline).join("<br>")}</p>`;
+  }
+  return html;
+}
+
+// ── API ───────────────────────────────────────────
+const j = async (u, o) => (await fetch(u, o)).json();
+const post = (u, body) => fetch(u, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})})
+  .then(async r => ({ok: r.ok, ...(await r.json())}));
+const changed = (k, v) => { const s = JSON.stringify(v); if (lastSig[k] === s) return false; lastSig[k] = s; return true; };
+
+// ── 頁首摘要 ───────────────────────────────────────
+function renderSummary(runs) {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const t = runs.filter(r => r.started * 1000 >= today);
+  const ok = t.filter(r => r.status === "success").length, bad = t.filter(r => r.status === "failed").length;
+  const next = WFS.filter(w => w.next_due && w.enabled).sort((a, b) => a.next_due - b.next_due)[0];
+  const running = WFS.filter(w => w.running);
+  const p = Object.entries(PROV).map(([n, v]) => v.ok ? `<span class="ok-text">${PROVIDER[n]}可用</span>`
+    : `<span class="bad-text">${PROVIDER[n]}${/API_KEY/.test(v.error) ? "還沒設定 key" : "連不上"}</span>`).join("、");
+  $("#summary").innerHTML = [
+    running.length ? `<b class="run-text">${running.map(w => esc(w.title)).join("、")}正在執行</b>` : "目前沒有工作在跑",
+    `今天跑了 <b>${t.length}</b> 次` + (t.length ? `（成功 ${ok}${bad ? `、<span class="bad-text">失敗 ${bad}</span>` : ""}）` : ""),
+    next ? `下一個是 <b>${when(next.next_due)}</b> 的「${esc(next.title)}」` : "",
+    p,
+  ].filter(Boolean).join("。") + "。";
+}
+
+// ── 工具列：工作流下拉選單 ─────────────────────────
+function wfState(w) {
+  if (w.running) return STATUS.running;
+  if (!w.last) return ["還沒跑過", "muted"];
+  return STATUS[w.last.status];
+}
+function renderBar() {
+  const w = selWf && WF[selWf];
+  const cnt = WFS.length, on = WFS.filter(x => x.enabled && !isManual(x.schedule)).length;
+  $("#dd-label").innerHTML = w ? `<span class="dot" style="background:var(--${wfState(w)[1] === "muted" ? "line" : wfState(w)[1]})"></span> ${esc(w.title)}` : "全部工作流";
+
+  $("#wf-menu").innerHTML =
+    `<div class="item ${!selWf ? "cur" : ""}" data-pick=""><span></span><span>全部工作流</span><span class="sub">${cnt} 條，${on} 條排程中</span></div><div class="sep"></div>` +
+    WFS.map(x => { const st = wfState(x);
+      const sub = x.running ? "執行中" : isManual(x.schedule) ? "手動" : !x.enabled ? `${schedText(x.schedule)} · 已停用` : `下次 ${when(x.next_due)}`;
+      return `<div class="item ${selWf === x.name ? "cur" : ""}" data-pick="${esc(x.name)}">
+        <span class="dot" style="background:var(--${st[1] === "muted" ? "line" : st[1]})"></span>
+        <span>${esc(x.title)}</span><span class="sub">${esc(sub)}</span></div>`; }).join("");
+
+  if (!w) {
+    $("#wf-info").innerHTML = `<span class="d">從左邊選一條工作流</span>，可以執行、開關排程或修改設定。`;
+    $("#wf-actions").innerHTML = "";
+    $("#more-menu").innerHTML = `<span class="plain" data-act="new">＋ 新增工作流</span>`;
+    return;
+  }
+  const manual = isManual(w.schedule);
+  const bits = [schedText(w.schedule)];
+  if (w.last) bits.push(`上次 ${when(w.last.started)}`);
+  if (w.next_due && w.enabled && !manual) bits.push(`下次 ${when(w.next_due)}`);
+  $("#wf-info").innerHTML = `<div class="d">${esc(w.description)}</div><div class="muted">${bits.join(" · ")} · ${esc(modelName(w.model, w.provider))}</div>`;
+
+  const keep = document.querySelector("#wf-actions input.runin")?.value || "";
+  $("#wf-actions").innerHTML =
+    (manual ? "" : `<label class="switch" title="開關排程"><input type="checkbox" data-enable ${w.enabled ? "checked" : ""}><span class="tr"></span>排程</label>`) +
+    (manual ? `<input type="text" class="runin" placeholder="要處理什麼？" value="${esc(keep)}">` : "") +
+    `<button data-run ${w.running ? "disabled" : ""}>${w.running ? "執行中…" : "立即執行"}</button>`;
+  $("#more-menu").innerHTML = `<span class="plain" data-act="edit">編輯設定</span><span class="plain" data-act="new">＋ 新增工作流</span>
+    <div class="sep"></div><span class="plain danger" data-act="delete">刪除這條工作流</span>`;
+}
+
+// ── 紀錄清單 ───────────────────────────────────────
+function renderRuns(runs) {
+  const list = runs.filter(r => !selWf || r.workflow === selWf);
+  const shown = showAll ? list : list.slice(0, 10);
+  $("#runs-title").textContent = selWf ? `「${WF[selWf]?.title || selWf}」的執行紀錄` : "最近的執行";
+  $("#runs").innerHTML = shown.map(r => {
+    const st = STATUS[r.status];
+    const took = r.finished ? dur(r.finished - r.started) : r.status === "running" ? "進行中" : "";
+    return `<div class="run ${r.id === selRun ? "sel" : ""}" data-rid="${r.id}">
+      <span class="dot" style="background:var(--${st[1]})"></span>
+      <div class="main"><div class="t">${esc(WF[r.workflow]?.title || r.workflow)}</div>
+        <div class="m">${r.trigger === "schedule" ? "排程" : "手動"} · ${esc(modelName(r.model, r.provider))}</div></div>
+      <div class="r"><span class="${st[1]}-text">${st[0]}</span><br>${when(r.started)}${took ? " · " + took : ""}</div>
+    </div>`;
+  }).join("") + (list.length > shown.length ? `<div class="more" data-more>再顯示 ${list.length - shown.length} 筆</div>` : "")
+    || '<div class="empty">還沒有執行紀錄</div>';
+}
+
+// ── 詳情 ───────────────────────────────────────────
+function timeline(steps) {
+  const items = [];
+  for (const s of steps) {
+    if (s.kind === "llm") {
+      const o = parseArgs(s.output); const said = (o.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+      const final = !(o.tool_calls || []).length;
+      if (!s.input && (!said || final)) continue;
+      items.push(`<li class="think"><div class="h">思考<small>${dur(s.ms / 1000)}</small></div>
+        ${said && !final ? `<div class="sub">${esc(said.slice(0, 300))}${said.length > 300 ? "…" : ""}</div>` : ""}
+        ${s.input ? `<details><summary>看思考過程（${s.input.length.toLocaleString()} 字）</summary><pre>${esc(s.input)}</pre></details>` : ""}</li>`);
+    } else if (s.kind === "tool") {
+      const [verb, obj] = describe(s.name, s.input); const r = resultSummary(s.name, s.output);
+      items.push(`<li class="${r.err ? "error" : "tool"}"><div class="h">${esc(verb)}${obj ? "：" + esc(obj) : ""}<small>${s.ms >= 1000 ? dur(s.ms/1000) : s.ms + " ms"}</small></div>
+        <div class="sub ${r.err ? "bad-text" : ""}">${esc(r.text)}</div>
+        <details><summary>看原始內容</summary><pre>${esc(s.input)}</pre><pre>${esc(s.output)}</pre></details></li>`);
+    } else {
+      const fb = (s.output || "").match(/→ 改用備援 (\S+)/);
+      items.push(`<li class="error"><div class="h">${fb ? `${PROVIDER[s.name] || s.name}出錯，改用 ${PROVIDER[fb[1]] || fb[1]}` : "執行中斷"}</div>
+        <div class="sub bad-text">${esc(humanError((s.output || "").split("\n")[0]))}</div>
+        <details><summary>看錯誤細節</summary><pre>${esc(s.output)}</pre></details></li>`);
+    }
+  }
+  return items.length ? `<ol class="steps">${items.join("")}</ol>` : '<div class="muted">沒有中間步驟</div>';
+}
+
+async function loadDetail() {
+  if (!selRun) { $("#detail").innerHTML = '<div class="empty">還沒有執行紀錄</div>'; return; }
+  const d = await j("/api/runs/" + selRun);
+  if (!changed("detail", [d, Math.floor(Date.now() / 60000)])) return;
+  const r = d.run, st = STATUS[r.status];
+  const took = r.finished ? `，花了 ${dur(r.finished - r.started)}` : "";
+  $("#detail").innerHTML = `
+    <p class="t">${esc(WF[r.workflow]?.title || r.workflow)} <span class="${st[1]}-text" style="font-size:15px">${st[0]}</span></p>
+    <div class="m">${when(r.started)}${r.trigger === "schedule" ? "排程" : "手動"}開始${took}，使用 ${esc(modelName(r.model, r.provider))}</div>
+    ${r.status === "running" ? `<div class="section">結果</div><div class="run-text">還在跑，看上面「現在」那一區</div>` : ""}
+    ${r.output ? `<div class="section">結果</div><div class="result">${md(r.output)}</div>` : ""}
+    ${r.error ? `<div class="section">哪裡出錯</div><div class="errbox">${esc(humanError(r.error))}</div>` : ""}
+    ${r.status === "interrupted" ? `<div class="section">哪裡出錯</div><div class="errbox">執行到一半伺服器被重新啟動，這次沒有跑完。</div>` : ""}
+    <div class="section">過程</div>${timeline(d.steps)}
+    <details class="raw"><summary>技術細節</summary>
+      <div style="margin-top:6px">模型 ID：${esc(r.model || PROV[r.provider]?.default_model || "")}<br>
+      讀入 ${r.tokens_in.toLocaleString()} tokens，產出 ${r.tokens_out.toLocaleString()} tokens</div>
+      <pre>${esc(r.input)}</pre></details>`;
+}
+
+// ── 現在：即時動作與思考 ─────────────────────────────
+const liveSteps = {};
+async function loadLive() {
+  const live = await j("/api/live");
+  if (!live.length) { $("#now").innerHTML = ""; return false; }
+  for (const L of live) {
+    if (!liveSteps[L.run_id] || liveSteps[L.run_id].round !== L.round || L.phase === "waiting")
+      liveSteps[L.run_id] = {round: L.round, steps: (await j("/api/runs/" + L.run_id)).steps};
+  }
+  const stick = Object.fromEntries([...document.querySelectorAll(".stream[data-k]")]
+    .map(e => [e.dataset.k, e.scrollHeight - e.scrollTop - e.clientHeight < 30]));
+  $("#now").innerHTML = `<h2>現在</h2>` + live.map(L => {
+    const done = liveSteps[L.run_id].steps.filter(s => s.kind !== "llm").map(s => {
+      if (s.kind === "tool") { const [v, o] = describe(s.name, s.input); const r = resultSummary(s.name, s.output);
+        return `<span class="s ${r.err ? "err" : ""}">${esc(v)}${o ? " " + esc(o.slice(0, 28)) : ""}</span>`; }
+      return `<span class="s err">出錯</span>`;
+    });
+    const el = Math.max(0, Date.now() / 1000 - (L.since || L.started));
+    let doing, cur, stream = "";
+    if (L.phase === "tool" || L.phase === "deciding") {
+      const [v, o] = describe(L.tool?.name, L.tool?.args);
+      cur = v; doing = (L.phase === "tool" ? "正在" : "決定要") + `${v}${o ? "：" + o : ""}`;
+    } else if (L.phase === "thinking") {
+      cur = "思考"; doing = "正在思考";
+      stream = `<div class="stream-label">思考內容（即時）</div><div class="stream" data-k="${L.run_id}">${esc(L.reasoning)}</div>`;
+    } else if (L.phase === "writing") {
+      cur = "寫結果"; doing = "正在寫結果";
+      stream = `<div class="stream-label">正在寫的內容（即時）</div><div class="stream" data-k="${L.run_id}">${esc(L.content)}</div>`;
+    } else {
+      cur = "閱讀"; doing = L.round === 1 ? "正在閱讀任務說明" : "正在消化剛才拿到的資料";
+    }
+    return `<div class="live">
+      <div class="live-head"><span class="t">${esc(L.title)}</span>
+        <span class="m">第 ${L.round} 輪 · 已經跑了 ${dur(Date.now()/1000 - L.started)} · ${esc(modelName(L.model, L.provider))}</span></div>
+      <div class="track">${[...done, `<span class="s cur">${esc(cur)}</span>`].join('<span class="arrow">→</span>')}</div>
+      <div class="doing"><span class="pulse"></span><span>${esc(doing)}</span><span class="sec">${dur(el)}</span></div>
+      ${stream}</div>`;
+  }).join("");
+  document.querySelectorAll(".stream[data-k]").forEach(e => { if (stick[e.dataset.k] !== false) e.scrollTop = e.scrollHeight; });
+  return true;
+}
+
+// ── 編輯表單 ───────────────────────────────────────
+const F = () => $("#ed-form").elements;
+function fillModels(provider, current) {
+  const models = (PROV[provider]?.models || []).filter(m => !/embed/i.test(m));
+  if (current && !models.includes(current)) models.unshift(current);
+  const def = PROV[provider]?.default_model;
+  F().model.innerHTML = `<option value="">預設${def ? `（${esc(modelName(def, provider).replace(/（.*）$/, ""))}）` : ""}</option>` +
+    models.map(m => `<option value="${esc(m)}" ${m === current ? "selected" : ""}>${esc(m)}</option>`).join("");
+}
+function fillFallback(provider, current) {
+  F().fallback.innerHTML = `<option value="">直接失敗</option>` + Object.keys(PROV).filter(p => p !== provider)
+    .map(p => `<option value="${p}" ${p === current ? "selected" : ""}>改用 ${PROVIDER[p] || p}</option>`).join("");
+}
+function syncSched() {
+  const k = F().sched_kind.value;
+  F().daily.style.display = k === "daily" ? "" : "none";
+  $("#ed-every").style.display = k === "every" ? "" : "none";
+  $("#ed-enabled").style.display = k === "manual" ? "none" : "";
+}
+function openEditor(w) {
+  editing = w ? w.name : null;
+  const f = F();
+  $("#ed-title").textContent = w ? `編輯「${w.title}」` : "新增工作流";
+  $("#ed-name-row").style.display = w ? "none" : "";
+  $("#ed-err").textContent = "";
+  f.title.value = w?.title || ""; f.name.value = ""; f.description.value = w?.description || "";
+  const s = w?.schedule || {};
+  f.sched_kind.value = s.daily ? "daily" : s.every_minutes ? "every" : "manual";
+  f.daily.value = s.daily || "08:00";
+  const ev = String(s.every_minutes || 60);
+  if (![...f.every.options].some(o => o.value === ev)) f.every.insertAdjacentHTML("beforeend", `<option value="${ev}">${ev} 分鐘</option>`);
+  f.every.value = ev;
+  f.enabled.checked = w ? w.enabled : true;
+  f.provider.innerHTML = Object.keys(PROV).map(p => `<option value="${p}">${PROVIDER[p] || p}</option>`).join("");
+  f.provider.value = w?.provider || "lmstudio";
+  fillModels(f.provider.value, w?.model || "");
+  fillFallback(f.provider.value, w ? w.fallback : Object.keys(PROV).find(p => p !== f.provider.value));
+  const have = new Set(w?.skills || []);
+  $("#ed-skills").innerHTML = SKILLS.map(sp => `<label><input type="checkbox" value="${esc(sp.name)}" ${have.has(sp.name) ? "checked" : ""}>
+    ${esc(describe(sp.name, {})[0])} <small>${esc(sp.name)}</small></label>`).join("");
+  f.task.value = w?.task || ""; f.system.value = w?.system || "你是自動執行任務的 agent，一律用繁體中文（台灣）。";
+  f.max_steps.value = w?.max_steps || 12;
+  syncSched();
+  $("#editor").showModal();
+  (w ? f.title : f.title).focus();
+}
+$("#ed-form").addEventListener("change", e => {
+  if (e.target.name === "sched_kind") syncSched();
+  if (e.target.name === "provider") { fillModels(e.target.value, ""); fillFallback(e.target.value, F().fallback.value); }
+});
+$("#ed-cancel").onclick = () => $("#editor").close();
+$("#ed-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const f = F(), k = f.sched_kind.value;
+  const body = {
+    name: f.name.value.trim(), title: f.title.value, description: f.description.value,
+    provider: f.provider.value, model: f.model.value, fallback: f.fallback.value,
+    enabled: k === "manual" ? true : f.enabled.checked,
+    schedule: k === "daily" ? {daily: f.daily.value} : k === "every" ? {every_minutes: +f.every.value} : {},
+    skills: [...$("#ed-skills").querySelectorAll("input:checked")].map(i => i.value),
+    task: f.task.value, system: f.system.value, max_steps: +f.max_steps.value,
+  };
+  $("#ed-save").disabled = true;
+  const r = await post(editing ? `/api/workflows/${encodeURIComponent(editing)}/save` : "/api/workflows/new", body);
+  $("#ed-save").disabled = false;
+  if (!r.ok) { $("#ed-err").textContent = r.error || "儲存失敗"; return; }
+  if (!editing) selWf = body.name;
+  $("#editor").close(); lastSig = {}; tick();
+});
+
+// ── 互動 ───────────────────────────────────────────
+let armedDelete = false;
+function closeMenus(except) { document.querySelectorAll(".menu.open").forEach(m => { if (m.id !== except) m.classList.remove("open"); });
+  if (except !== "more-menu") armedDelete = false; }
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeMenus(); });
+document.addEventListener("click", async e => {
+  const tg = e.target.closest("[data-toggle]");
+  if (tg) { const m = document.getElementById(tg.dataset.toggle); closeMenus(m.id); m.classList.toggle("open"); return; }
+
+  const pick = e.target.closest("[data-pick]");
+  if (pick) { selWf = pick.dataset.pick || null; showAll = false; selRun = null; closeMenus(); lastSig = {}; tick(); return; }
+
+  const act = e.target.closest("[data-act]");
+  if (act) {
+    const a = act.dataset.act;
+    if (a === "edit") { closeMenus(); openEditor(WF[selWf]); }
+    else if (a === "new") { closeMenus(); openEditor(null); }
+    else if (a === "delete") {
+      if (!armedDelete) { armedDelete = true; act.textContent = `再點一次，刪除「${WF[selWf].title}」`; return; }
+      const r = await post(`/api/workflows/${encodeURIComponent(selWf)}/delete`);
+      closeMenus();
+      if (!r.ok) { alertBar(r.error); return; }
+      selWf = null; selRun = null; lastSig = {}; tick();
+    }
+    return;
+  }
+  if (!e.target.closest(".menu")) closeMenus();
+
+  if (e.target.closest("[data-run]")) {
+    const b = e.target.closest("[data-run]"), inp = document.querySelector("#wf-actions .runin");
+    b.disabled = true;
+    await post(`/api/workflows/${encodeURIComponent(selWf)}/run`, {input: inp?.value || ""});
+    if (inp) inp.value = "";
+    setTimeout(async () => { selRun = (await j("/api/runs?workflow=" + encodeURIComponent(selWf)))[0]?.id; lastSig = {}; tick(); }, 400);
+    return;
+  }
+  if (e.target.closest("[data-more]")) { showAll = true; lastSig.runs = null; tick(); return; }
+  const r = e.target.closest("[data-rid]");
+  if (r) { selRun = +r.dataset.rid; lastSig.runs = null; lastSig.detail = null; tick(); }
+});
+document.addEventListener("change", async e => {
+  if (e.target.matches("[data-enable]")) {
+    const r = await post(`/api/workflows/${encodeURIComponent(selWf)}/enabled`, {enabled: e.target.checked});
+    if (!r.ok) { e.target.checked = !e.target.checked; alertBar(r.error); }
+    lastSig = {}; tick();
+  }
+});
+function alertBar(msg) { $("#wf-info").innerHTML = `<span class="bad-text">${esc(msg || "發生錯誤")}</span>`; }
+
+// ── 輪詢 ───────────────────────────────────────────
+let busy = false;
+async function tick() {
+  if (busy) return; busy = true;
+  try {
+    const [wfs, runs] = await Promise.all([j("/api/workflows"), j("/api/runs")]);
+    WFS = wfs; WF = Object.fromEntries(wfs.map(w => [w.name, w]));
+    if (selWf && !WF[selWf]) selWf = null;
+    const visible = runs.filter(r => !selWf || r.workflow === selWf);
+    if (!selRun || !visible.some(r => r.id === selRun)) selRun = visible[0]?.id || null;
+    const minute = Math.floor(Date.now() / 60000);
+    renderSummary(runs);
+    if (changed("bar", [wfs, selWf, minute]) && !document.querySelector(".menu.open") && document.activeElement?.className !== "runin") renderBar();
+    if (changed("runs", [runs, selRun, selWf, showAll, minute])) renderRuns(runs);
+    await loadDetail();
+  } finally { busy = false; }
+}
+async function liveLoop() {
+  let active = false;
+  try { active = await loadLive(); } catch {}
+  setTimeout(liveLoop, active ? 700 : 2500);
+}
+(async () => {
+  try { [PROV, SKILLS] = await Promise.all([j("/api/providers"), j("/api/skills")]); } catch {}
+  await tick(); liveLoop();
+  setInterval(tick, 3000);
+  setInterval(async () => { try { PROV = await j("/api/providers"); } catch {} }, 30000);
+})();
+</script>
+</body>
+</html>

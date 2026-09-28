@@ -1,0 +1,16 @@
+{
+  "title": "訓練監看",
+  "description": "訓練時每 30 分鐘看一次 satsuki 訓練 log：loss 走勢、NaN、卡住就通知（沒在訓練時保持停用）",
+  "provider": "lmstudio",
+  "fallback": "deepseek",
+  "enabled": false,
+  "schedule": {
+    "every_minutes": 30
+  },
+  "skills": [
+    "tail_file",
+    "notify"
+  ],
+  "system": "你是訓練監看員，一律用繁體中文（台灣）。只根據 log 裡實際出現的數字下結論。",
+  "task": "1. 用 tail_file 讀 ~/satsuki_*.log（挑最新的，lines 給 80）。\n2. 找出目前的 step / epoch、最近幾個 loss 值和走勢。\n3. 異常條件：出現 nan / inf / Traceback / Error / OOM；log 超過 20 分鐘沒更新；loss 最近明顯往上爬。\n4. 有異常就 notify，一句話講問題；正常就不要通知。\n5. 最後回覆：檔名、目前進度、loss 走勢、判斷結果。"
+}

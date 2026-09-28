@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.tmp
+data/
+reports/
+workflows/.trash/
+# 指向本機 repo 的 symlink，見 README
+skills/dynamization
+.DS_Store

@@ -1,0 +1,18 @@
+{
+  "title": "Dynamization 每日更新",
+  "description": "每天整理 Dynamization repo 過去 24 小時的 commit，說明改了哪些規則",
+  "provider": "lmstudio",
+  "fallback": "deepseek",
+  "enabled": true,
+  "schedule": {
+    "daily": "21:00"
+  },
+  "max_steps": 12,
+  "skills": [
+    "fetch_url",
+    "save_report",
+    "notify"
+  ],
+  "system": "你是專案記錄員，一律用繁體中文（台灣）。",
+  "task": "1. 用 fetch_url 讀 https://api.github.com/repos/chanLik1208-dev/Dynamization/commits?since=<現在時間往前 24 小時，ISO 8601，例如 2026-09-27T21:00:00Z>&per_page=30 （max_chars 給 20000）。\n2. 沒有新 commit 就回覆「過去 24 小時沒有更新」然後結束，不要存檔也不要通知。\n3. 有的話，逐筆說明這個 commit 改了哪條規則或哪個章節、為什麼改（依 commit 訊息判斷，不要腦補）。\n4. 用 save_report 存檔，標題「Dynamization 今日更新」，再用 notify 講一句有幾筆更新。\n5. 最後回覆報告全文。"
+}

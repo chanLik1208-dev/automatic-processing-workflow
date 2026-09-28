@@ -1,0 +1,17 @@
+{
+  "title": "動態審查",
+  "description": "動畫／對比度審查：給一個檔案路徑或網址，用 Dynamization 找出「生硬、沒層次」的原因並給改法",
+  "provider": "lmstudio",
+  "fallback": "deepseek",
+  "max_steps": 10,
+  "skills": [
+    "use_skill",
+    "read_skill_file",
+    "fetch_url",
+    "tail_file",
+    "save_report"
+  ],
+  "system": "你是介面動態與明暗對比的審查員，一律用繁體中文（台灣）。判斷一律以 dynamization skill 為準，引用它的章節，不要憑感覺。",
+  "task": "審查「額外輸入」給的檔案或網址。\n1. 先讀目標：本機路徑（~ 或 / 開頭）用 tail_file（lines 給 2000），http 網址才用 fetch_url（max_chars 給 30000）。\n2. 用 use_skill 載入 dynamization。\n3. 依目標實際用到的東西，從 i18n/zh-TW/ 挑最相關的章節，最多讀兩個（pitfalls.md 查症狀、feel.md 講時間和彈簧、contrast.md 講明暗層次、recipes.md 有現成規格）。不要全部讀，context 放不下。\n4. 逐一列出問題：位置（選擇器或行）、違反哪一條（附章節）、用物理量說明哪裡不對（秒數、距離、阻尼比、亮度差）、具體改法（附改好的程式碼）。沒有問題就直說沒有，不要硬湊。\n5. 用 save_report 存檔，標題「動態審查：<目標檔名>」。\n6. 最後回覆報告全文。",
+  "model": "qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive-mlx"
+}

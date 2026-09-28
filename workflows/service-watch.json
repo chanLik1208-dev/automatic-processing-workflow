@@ -1,0 +1,16 @@
+{
+  "title": "服務巡檢",
+  "description": "每小時巡檢 sub.sakedns.cc、subconverter、LM Studio 和磁碟，只有出問題才通知",
+  "provider": "lmstudio",
+  "fallback": "deepseek",
+  "schedule": {
+    "every_minutes": 60
+  },
+  "skills": [
+    "http_check",
+    "system_status",
+    "notify"
+  ],
+  "system": "你是這台 Mac 的值班巡檢員，一律用繁體中文（台灣）。你只負責檢查和回報，不修東西。",
+  "task": "1. 用 http_check 檢查：https://sub.sakedns.cc/version 、http://127.0.0.1:25500/version 、http://127.0.0.1:1234/v1/models 。\n2. 用 system_status 檢查程序 cloudflared、subconverter、LM Studio。\n3. 判斷：任何 DOWN / PROBLEM、程序沒在跑、磁碟剩不到 30 GB，都算異常。\n4. 有異常才用 notify，一句話講哪裡壞了；全部正常就不要通知。\n5. 最後回覆一份簡短的檢查結果（每項一行，正常或異常）。注意 sakedns 那組服務是手動啟動的，沒開的話要點明「可能只是沒啟動，執行 ~/sakedns-start.command」。"
+}
