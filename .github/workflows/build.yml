@@ -1,15 +1,42 @@
 name: build
 
-# 推 v* 標籤：三個平台各自編譯、實際啟動測一次，然後發佈到 Releases
-# 推到 release-check 分支、或手動觸發：只編譯和測試，產物在該次執行的 Artifacts
+# 推 v* 標籤：四個平台各自編譯、實際啟動測一次，然後發佈正式 release
+# 推到 release-check 分支（或手動觸發）：一樣編譯和測試，但放進「草稿」release，不公開發佈
+#
+# 執行檔直接上傳到 Releases，不用 Actions 的 artifact：私人 repo 的 artifact 儲存配額很容易用完，
+# Releases 的檔案不算在那個配額裡。
 on:
   push:
     tags: ["v*"]
-    branches: ["release-check"]   # 推到這個分支就編譯測試，但不發佈（發佈只在 v* 標籤）
+    branches: ["release-check"]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.t.outputs.tag }}
+    steps:
+      - id: t
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+            gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag
+          else
+            TAG="check-${GITHUB_RUN_NUMBER}"
+            gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "測試編譯 #${GITHUB_RUN_NUMBER}（${GITHUB_REF_NAME}）" \
+              --notes "release-check 分支的測試編譯，草稿，不公開。commit ${GITHUB_SHA}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -31,8 +58,9 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           BIN=$(ls dist/AutoWorkflow-*)
-          AUTOWORKFLOW_HOME=$RUNNER_TEMP/home "$BIN" --port 8799 --no-browser &
-          for i in $(seq 1 60); do curl -sf localhost:8799/api/providers && break; sleep 1; done
+          "$BIN" list
+          AUTOWORKFLOW_HOME=$RUNNER_TEMP/home "$BIN" --headless --port 8799 &
+          for i in $(seq 1 60); do curl -sf localhost:8799/api/providers > /dev/null && break; sleep 1; done
           curl -sf localhost:8799/api/workflows | python -c "import json,sys; w=json.load(sys.stdin); assert len(w)==3, w; print('ok', [x['name'] for x in w])"
           curl -sf localhost:8799/ | grep -q "自動化工作流"
           kill %1
@@ -42,8 +70,10 @@ jobs:
         shell: pwsh
         run: |
           $bin = (Get-ChildItem dist\AutoWorkflow-*.exe).FullName
+          & $bin list
+          if ($LASTEXITCODE -ne 0) { throw "list 失敗" }
           $env:AUTOWORKFLOW_HOME = "$env:RUNNER_TEMP\home"
-          $p = Start-Process $bin -ArgumentList "--port","8799","--no-browser" -PassThru
+          $p = Start-Process $bin -ArgumentList "--headless","--port","8799" -PassThru
           $ok = $false
           for ($i = 0; $i -lt 60; $i++) { try { Invoke-RestMethod http://127.0.0.1:8799/api/providers | Out-Null; $ok = $true; break } catch { Start-Sleep 1 } }
           if (-not $ok) { throw "沒有啟動" }
@@ -51,23 +81,8 @@ jobs:
           if ($w.Count -ne 3) { throw "預設工作流數量不對：$($w.Count)" }
           Stop-Process $p.Id
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.os }}
-          path: dist/*
-
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
-          generate_release_notes: true
+      - name: 上傳到 Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.prepare.outputs.tag }}" dist/AutoWorkflow-* --clobber

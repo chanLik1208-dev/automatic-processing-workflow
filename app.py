@@ -27,6 +27,13 @@ import engine
 import server
 import skill_admin
 
+# Windows 主控台預設不是 UTF-8（例如 cp1252），印中文會直接當掉；統一改成 UTF-8，印不出來的字元用替代符號
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 
 def already_running(host, port):
     """那個 port 上是不是「用同一個資料夾」的本程式。別的資料夾的、或別的程式都不算。"""

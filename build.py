@@ -7,6 +7,13 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent
+
+# Windows 主控台預設不是 UTF-8（例如 cp1252），印中文會直接當掉；統一改成 UTF-8，印不出來的字元用替代符號
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 os_name = {"darwin": "macos", "win32": "windows"}.get(sys.platform, "linux")
 arch = {"x86_64": "x64", "amd64": "x64", "arm64": "arm64", "aarch64": "arm64"}.get(platform.machine().lower(), platform.machine())
 name = f"AutoWorkflow-{os_name}-{arch}"
