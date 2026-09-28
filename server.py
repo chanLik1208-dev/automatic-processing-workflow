@@ -1,6 +1,12 @@
 """監控面板 + API。啟動：python3 server.py"""
 import json
+import os
+import pathlib
+import subprocess
+import tempfile
 import threading
+import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -29,6 +35,43 @@ def workflows_view():
     return out
 
 
+CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+
+def convert(html, fmt):
+    """把前端組好的完整 HTML 轉成 docx（textutil）或 pdf（Chrome headless），回傳 bytes。"""
+    with tempfile.TemporaryDirectory() as d:
+        src = pathlib.Path(d) / "report.html"
+        src.write_text(html, encoding="utf-8")
+        out = pathlib.Path(d) / f"report.{fmt}"
+        if fmt == "docx":
+            subprocess.run(["textutil", "-convert", "docx", str(src), "-output", str(out)],
+                           check=True, capture_output=True, timeout=60)
+            return out.read_bytes()
+        if not os.path.exists(CHROME):
+            raise RuntimeError("找不到 Google Chrome，沒辦法轉 PDF；可以改用「列印 → 另存為 PDF」")
+        # Chrome headless 寫完 PDF 常常不會自己結束，所以等檔案寫好、大小穩定就直接關掉它
+        p = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--no-pdf-header-footer",
+                              f"--user-data-dir={d}/profile", f"--print-to-pdf={out}", src.as_uri()],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            last, deadline = -1, time.time() + 60
+            while time.time() < deadline:
+                size = out.stat().st_size if out.exists() else -1
+                if size > 0 and size == last:
+                    break
+                if p.poll() is not None and size > 0:
+                    break
+                last = size
+                time.sleep(0.5)
+            else:
+                raise RuntimeError("PDF 轉換逾時")
+        finally:
+            p.kill()
+            p.wait()
+        return out.read_bytes()
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -51,7 +94,7 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/api/live":
             out = []
             for v in list(engine.LIVE.values()):
-                v = dict(v)
+                v = {k: x for k, x in v.items() if not k.startswith("_")}   # _resp 之類的內部物件不外露
                 v["reasoning"] = (v.get("reasoning") or "")[-6000:]
                 v["content"] = (v.get("content") or "")[-6000:]
                 out.append(v)
@@ -92,6 +135,23 @@ class H(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b"{}")
         except ValueError:
             return self.send({"error": "body 不是 JSON"}, 400)
+        if parts == ["api", "export"]:
+            fmt, html = body.get("format"), body.get("html") or ""
+            if fmt not in ("docx", "pdf") or not html or len(html) > 5_000_000:
+                return self.send({"error": "格式不支援或內容太大"}, 400)
+            try:
+                data = convert(html, fmt)
+            except Exception as e:
+                return self.send({"error": f"轉換失敗：{e}"}, 500)
+            name = urllib.parse.quote(str(body.get("filename") or f"report.{fmt}"))
+            self.send_response(200)
+            self.send_header("Content-Type", {"docx": "application/vnd.openxmlformats-officedocument."
+                                                      "wordprocessingml.document", "pdf": "application/pdf"}[fmt])
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{name}")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if parts[:2] != ["api", "workflows"] or len(parts) < 3:
             return self.send({"error": "not found"}, 404)
         name = parts[2]
@@ -103,6 +163,8 @@ class H(BaseHTTPRequestHandler):
             action = parts[3] if len(parts) == 4 else ""
             if action == "run":
                 return self.send({"started": engine.start_async(name, "manual", body.get("input", ""))})
+            if action == "stop":
+                return self.send({"ok": engine.cancel(name)})
             if action == "save":
                 return self.send({"ok": True, "workflow": engine.save_workflow(name, body)})
             if action == "enabled":

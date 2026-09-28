@@ -1,6 +1,7 @@
 """Agent 執行引擎：讀 workflow → 跑 tool-calling 迴圈 → 每一步寫進 SQLite。"""
 import datetime
 import importlib.util
+import subprocess
 import json
 import os
 import pathlib
@@ -90,8 +91,8 @@ def load_workflows():
     return wfs
 
 
-FIELD_ORDER = ["title", "description", "provider", "model", "fallback", "enabled", "schedule",
-               "max_steps", "skills", "system", "task"]
+FIELD_ORDER = ["title", "description", "provider", "model", "fallback", "fallback_model", "enabled", "schedule",
+               "max_steps", "max_tokens", "skills", "system", "task"]
 
 
 def validate_workflow(d):
@@ -112,6 +113,8 @@ def validate_workflow(d):
         if d["fallback"] not in providers or d["fallback"] == wf["provider"]:
             raise ValueError("備援必須是另一個模型來源")
         wf["fallback"] = d["fallback"]
+        if d.get("fallback_model"):
+            wf["fallback_model"] = str(d["fallback_model"]).strip()
     wf["enabled"] = bool(d.get("enabled", True))
     s = d.get("schedule") or {}
     if s.get("daily"):
@@ -124,6 +127,8 @@ def validate_workflow(d):
             raise ValueError("間隔要在 5 分鐘到 7 天之間")
         wf["schedule"] = {"every_minutes": m}
     wf["max_steps"] = max(1, min(40, int(d.get("max_steps") or 12)))
+    if d.get("max_tokens"):
+        wf["max_tokens"] = max(256, min(32768, int(d["max_tokens"])))
     bad = [x for x in d.get("skills") or [] if x not in skills]
     if bad:
         raise ValueError(f"沒有這些 skill：{bad}")
@@ -173,15 +178,130 @@ def provider_conf(name):
     return p
 
 
+class Cancelled(Exception):
+    pass
+
+
+class ModelBroken(Exception):
+    """模型本身壞掉（數值崩潰等），不是網路問題；要給人看得懂的原因。"""
+
+
+LMS_LOGS = pathlib.Path.home() / ".lmstudio" / "server-logs"
+LMS_CLI = pathlib.Path.home() / ".lmstudio" / "bin" / "lms"
+
+
+def _lms_log():
+    try:
+        return max(LMS_LOGS.glob("*/*.log"), key=lambda p: p.stat().st_mtime)
+    except ValueError:
+        return None
+
+
+# ---------- LM Studio 原始輸出 ----------
+# OpenAI 相容 API 給的是 LM Studio 處理過的內容（工具呼叫被拆開、無效 token 被丟掉）。
+# `lms log stream --source model --filter output` 會在每次生成結束時給出模型寫的原文和停止原因，
+# 錄下來跟我們收到的內容對照，LM Studio 吞掉了什麼就看得出來。
+_raw_events, _raw_lock, _raw_started = [], threading.Lock(), False
+
+
+def _raw_listener():
+    while True:
+        try:
+            p = subprocess.Popen([str(LMS_CLI), "log", "stream", "--source", "model", "--filter", "output", "--json"],
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8")
+            for line in p.stdout:
+                if not line.startswith("{"):
+                    continue
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                d = e.get("data") or {}
+                if d.get("type") == "llm.prediction.output":
+                    with _raw_lock:
+                        _raw_events.append({"ts": e.get("timestamp", 0) / 1000, "model": d.get("modelIdentifier"),
+                                            "output": d.get("output", ""), "stats": d.get("stats") or {}})
+                        del _raw_events[:-50]
+        except Exception:
+            traceback.print_exc()
+        time.sleep(5)                            # lms 被關掉或 LM Studio 重開：過一下再接上
+
+
+def _ensure_raw_listener():
+    global _raw_started
+    if not _raw_started and LMS_CLI.exists():
+        _raw_started = True
+        threading.Thread(target=_raw_listener, daemon=True).start()
+
+
+def take_raw(model, since, wait=3.0):
+    """拿走「這個模型、這個時間之後」的第一段原始輸出；事件在生成結束後才到，所以稍等一下。"""
+    deadline = time.time() + wait
+    while True:
+        with _raw_lock:
+            for i, e in enumerate(_raw_events):
+                if e["model"] == model and e["ts"] >= since - 1:
+                    return _raw_events.pop(i)
+        if time.time() > deadline:
+            return None
+        time.sleep(0.2)
+
+
+def _watch_lmstudio(live, stop, model):
+    """LM Studio 遇到 NaN token 時會默默把 token 丟掉、不傳給我們，但會寫進它自己的 log。
+    盯著 log：一出現就標記、切斷連線、把壞掉的模型卸載（它不會自己停，會一直空轉佔 GPU）。"""
+    log = _lms_log()
+    if not log:
+        return
+    pos = log.stat().st_size
+    while not stop.wait(2):
+        try:
+            with open(log, "rb") as f:
+                f.seek(pos)
+                chunk = f.read()
+                pos = f.tell()
+        except OSError:
+            return
+        if b"received nan" in chunk:
+            live["broken"] = ("模型發生數值崩潰（算出的機率變成 NaN），之後產生的全是無效 token，"
+                              "LM Studio 把它們丟掉了，所以沒有任何內容出來。已經自動停止並卸載模型，下次會重新載入。")
+            resp = live.get("_resp")
+            if resp:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+            subprocess.run([str(LMS_CLI), "unload", model], capture_output=True, timeout=60)
+            return
+
+
+_cancel = set()
+
+
+def cancel(name):
+    """標記要停止；引擎在下一輪開始前檢查（正在等模型回覆的那一輪會先跑完）。"""
+    ids = [rid for rid, v in LIVE.items() if v["workflow"] == name]
+    _cancel.update(ids)
+    for rid in ids:                             # 正在等模型的話直接切斷連線，LM Studio 也會跟著停止生成
+        resp = LIVE.get(rid, {}).get("_resp")
+        if resp:
+            try:
+                resp.close()
+            except Exception:
+                pass
+    return bool(ids)
+
+
 # 執行中的 run 即時狀態（給監控頁看「現在在做什麼、在想什麼」），run 結束就移除
 LIVE = {}
 
 
-def chat(provider, model, messages, tools, live=None, timeout=300):
+def chat(provider, model, messages, tools, live=None, timeout=300, max_tokens=4096):
     """串流呼叫，邊收邊更新 live；回傳格式跟非串流的 chat completion 一樣。"""
     p = provider_conf(provider)
+    # 一定要有上限：模型偶爾會鬼打牆地一直生成，沒上限就會一路寫到 context 滿
     body = {"model": model or p["default_model"], "messages": messages, "temperature": 0.3,
-            "stream": True, "stream_options": {"include_usage": True}}
+            "max_tokens": max_tokens, "stream": True, "stream_options": {"include_usage": True}}
     if tools:
         body["tools"] = tools
     req = urllib.request.Request(
@@ -190,21 +310,33 @@ def chat(provider, model, messages, tools, live=None, timeout=300):
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {p['api_key']}"},
     )
     live = live if live is not None else {}
-    reasoning, content, calls, usage, model_name = "", "", {}, {}, body["model"]
+    live.pop("broken", None)
+    reasoning, content, calls, usage, model_name, finish, done = "", "", {}, {}, body["model"], None, False
+    stop_watch = threading.Event()
+    local = "localhost" in p["base_url"] or "127.0.0.1" in p["base_url"]
+    started = time.time()
+    if local:
+        _ensure_raw_listener()
+        threading.Thread(target=_watch_lmstudio, args=(live, stop_watch, body["model"]), daemon=True).start()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
+            live["_resp"] = r
             for raw in r:
                 line = raw.decode(errors="replace").strip()
                 if not line.startswith("data:"):
                     continue
                 data = line[5:].strip()
                 if data == "[DONE]":
+                    done = True
                     break
                 chunk = json.loads(data)
                 usage = chunk.get("usage") or usage
                 model_name = chunk.get("model") or model_name
                 for ch in chunk.get("choices") or []:
+                    finish = ch.get("finish_reason") or finish
                     d = ch.get("delta") or {}
+                    if d:
+                        live["last_token"] = time.time()
                     r_part = d.get("reasoning_content") or d.get("reasoning")
                     if r_part:
                         reasoning += r_part
@@ -214,7 +346,7 @@ def chat(provider, model, messages, tools, live=None, timeout=300):
                         # 有些模型把思考直接夾在 content 的 <think> 裡
                         if "<think>" in content and "</think>" not in content:
                             live.update(phase="thinking", reasoning=content.split("<think>", 1)[1])
-                        else:
+                        elif not calls:   # 已經開始呼叫工具就停在「決定要…」，不要跟說明文字來回切換
                             live.update(phase="writing", content=strip_think(content))
                     for tc in d.get("tool_calls") or []:
                         slot = calls.setdefault(tc.get("index", 0), {
@@ -227,11 +359,35 @@ def chat(provider, model, messages, tools, live=None, timeout=300):
                                                             "args": slot["function"]["arguments"]})
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"{provider} HTTP {e.code}: {e.read().decode(errors='replace')[:500]}")
+    except Exception:
+        if live.get("run_id") in _cancel:      # 連線是被「停止」切斷的
+            raise Cancelled()
+        if live.get("broken"):
+            raise ModelBroken(live["broken"])
+        raise
+    finally:
+        stop_watch.set()
+        live.pop("_resp", None)
+    if live.get("run_id") in _cancel:
+        raise Cancelled()
+    if live.get("broken"):
+        raise ModelBroken(live["broken"])
+    if local and (not content and not calls or not done and not finish):
+        live["_raw"] = take_raw(body["model"], started, wait=1.5)
+    if not content and not calls:
+        raise ModelBroken("模型什麼都沒有回傳（可能剛崩潰或正在重新載入）。")
+    if not done and not finish:
+        # 連線在沒有結束訊號的情況下斷了：寫到一半的東西不能當成完成的結果
+        raise ModelBroken(f"模型寫到一半連線就斷了（已寫 {len(content)} 字），內容不完整。常見原因是 LM Studio 崩潰或記憶體不足。")
+    if finish == "length":
+        content += f"\n\n[已達單輪輸出上限 {max_tokens} tokens，內容被截斷]"
     tool_calls = []
     for i, c in sorted(calls.items()):
         c["id"] = c["id"] or f"call_{i}"
         tool_calls.append(c)
     msg = {"role": "assistant", "content": content or None, "reasoning_content": reasoning}
+    if local:
+        msg["raw"] = take_raw(body["model"], started)
     if tool_calls:
         msg["tool_calls"] = tool_calls
     return {"model": model_name, "usage": usage, "choices": [{"message": msg}]}
@@ -266,7 +422,11 @@ def run_workflow(name, trigger="manual", extra_input=""):
     if "use_skill" in allowed:
         cat = "\n".join(f"- {n}：{d}" for n, d in skills["use_skill"].catalog())
         system += f"\n\n可用的知識型 skill（任務相關時先用 use_skill 載入）：\n{cat}"
-    task = wf["task"] + (f"\n\n額外輸入：{extra_input}" if extra_input else "")
+    task = wf["task"]
+    if wf.get("description"):
+        task = f"（這個工作流的說明：{wf['description']}）\n\n{task}"
+    if extra_input:
+        task += f"\n\n額外輸入：{extra_input}"
     messages = [{"role": "system", "content": system}, {"role": "user", "content": task}]
 
     provider, model = wf.get("provider", "lmstudio"), wf.get("model")
@@ -276,18 +436,26 @@ def run_workflow(name, trigger="manual", extra_input=""):
     live = LIVE[run_id] = {"run_id": run_id, "workflow": name, "title": wf.get("title", name),
                            "started": time.time(), "round": 0, "provider": provider, "model": model or ""}
 
+    fails, first_err = 0, None
     try:
         for rnd in range(wf["max_steps"]):
+            if run_id in _cancel:
+                raise Cancelled()
             t0 = time.time()
-            live.update(round=rnd + 1, phase="waiting", since=t0, reasoning="", content="", tool=None,
+            live.update(round=rnd + 1, phase="waiting", since=t0, reasoning="", content="", tool=None, last_token=None,
                         provider=provider, model=model or "")
             try:
-                resp = chat(provider, model, messages, tools, live)
+                resp = chat(provider, model, messages, tools, live, max_tokens=wf.get("max_tokens", 4096))
+            except Cancelled:
+                raise
             except Exception as e:
                 # 主 provider 掛了就換備援，同一個 run 裡接著跑
                 fb = wf.get("fallback")
+                first_err = first_err or str(e)
                 if fb and fb != provider:
-                    add_step(run_id, idx, "error", provider, "", f"{e}\n→ 改用備援 {fb}"); idx += 1
+                    raw = live.pop("_raw", None)
+                    add_step(run_id, idx, "error", provider, json.dumps({"raw": raw}, ensure_ascii=False) if raw else "",
+                             f"{e}\n→ 改用備援 {fb}"); idx += 1
                     provider, model = fb, wf.get("fallback_model")
                     _exec("UPDATE runs SET provider=?, model=? WHERE id=?", (provider, model or "", run_id))
                     continue
@@ -300,7 +468,8 @@ def run_workflow(name, trigger="manual", extra_input=""):
             calls = msg.get("tool_calls") or []
 
             add_step(run_id, idx, "llm", resp.get("model", model or provider),
-                     reasoning, json.dumps({"content": msg.get("content"), "tool_calls": calls}, ensure_ascii=False), ms)
+                     reasoning, json.dumps({"content": msg.get("content"), "tool_calls": calls, "raw": msg.get("raw")},
+                                           ensure_ascii=False), ms)
             idx += 1
 
             messages.append({k: v for k, v in msg.items() if k in ("role", "content", "tool_calls")})
@@ -324,16 +493,29 @@ def run_workflow(name, trigger="manual", extra_input=""):
                 add_step(run_id, idx, "tool", fn, call["function"].get("arguments"), result[:20000],
                          int((time.time() - t0) * 1000))
                 idx += 1
+                failed = result.startswith(("[skill 錯誤]", "找不到", "這個路徑不", "沒有這個", "只接受"))
+                fails = fails + 1 if failed else 0
+                if fails >= 3:
+                    # 小模型碰到錯誤常會一直換個猜法重試；連錯三次就叫它停下來照實回報
+                    result += ("\n\n[系統] 已經連續失敗 3 次。不要再猜網址或路徑，"
+                               "直接回報你缺什麼資訊、哪裡失敗，然後結束。")
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": result[:40000]})
 
         raise RuntimeError(f"超過 max_steps={wf['max_steps']} 還沒結束")
+    except Cancelled:
+        add_step(run_id, idx, "error", "cancelled", "", "使用者停止了這次執行")
+        _exec("UPDATE runs SET status='cancelled', finished=?, error=?, tokens_in=?, tokens_out=? WHERE id=?",
+              (time.time(), "使用者停止了這次執行", tin, tout, run_id))
+        return run_id
     except Exception as e:
-        add_step(run_id, idx, "error", "engine", "", traceback.format_exc()[-3000:])
+        msg = f"{first_err}；備援也失敗：{e}" if first_err and first_err != str(e) else str(e)
+        add_step(run_id, idx, "error", "engine", traceback.format_exc()[-3000:], msg)
         _exec("UPDATE runs SET status='failed', finished=?, error=?, tokens_in=?, tokens_out=? WHERE id=?",
-              (time.time(), str(e), tin, tout, run_id))
+              (time.time(), msg, tin, tout, run_id))
         return run_id
     finally:
         LIVE.pop(run_id, None)
+        _cancel.discard(run_id)
 
 
 # ---------- 排程 ----------

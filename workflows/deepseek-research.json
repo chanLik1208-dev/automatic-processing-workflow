@@ -1,13 +1,16 @@
 {
   "title": "研究助理",
-  "description": "手動觸發：給一個主題或網址，DeepSeek 讀網頁後整理重點",
+  "description": "手動觸發：給一個主題或網址，先上網搜尋再讀網頁，整理重點",
   "provider": "deepseek",
   "model": "deepseek-chat",
   "fallback": "lmstudio",
+  "fallback_model": "qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive-mlx",
   "skills": [
+    "web_search",
     "fetch_url",
+    "github_repo",
     "save_report"
   ],
   "system": "你是研究助理，一律用繁體中文（台灣）。只根據你實際讀到的內容下結論，讀不到就直說。",
-  "task": "根據「額外輸入」裡的主題或網址做研究：需要的話用 fetch_url 讀網頁（最多 4 頁），整理成重點摘要，用 save_report 存檔，最後回覆摘要全文。"
+  "task": "根據「額外輸入」裡的主題或網址做研究：\n1. 只給主題就先用 web_search 搜尋；給了網址就直接讀。\n2. 挑最相關的 2–4 個來源用 fetch_url 讀內文（GitHub repo 用 github_repo）。\n3. 整理成重點摘要，每個重點標出來源網址；來源之間說法不同要講出來。\n4. 用 save_report 存檔，最後回覆摘要全文。"
 }

@@ -6,14 +6,16 @@
 <title>自動化工作流</title>
 <style>
 :root {
+  --accent: #CCCCFF; --accent-ink: #1e1e3c; --c-model: #CCCCFF; --c-model-ink: #1e1e3c; --c-tool: #eb6834;
   --bg: #f5f4f0; --panel: #ffffff; --ink: #1c1c1a; --soft: #4a4a45; --muted: #85857d; --line: #e4e2dc;
-  --ok: #1d7f47; --bad: #bf3a2e; --run: #2a5fc4; --warn: #a86d12; --tint: #f0efea; --run-tint: #eaf0fb;
+  --ok: #1d7f47; --bad: #bf3a2e; --run: #5252b8; --warn: #a86d12; --tint: #f0efea; --run-tint: #ececff;
   --shadow: 0 8px 28px rgba(0,0,0,.12), 0 2px 6px rgba(0,0,0,.06);
+  --elev: #ffffff;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --soft: #c4c3bc; --muted: #8d8c85; --line: #31312d;
-          --ok: #52c186; --bad: #ee6d61; --run: #7ba4f2; --warn: #e0a84a; --tint: #262623; --run-tint: #1c2537;
-          --shadow: 0 10px 32px rgba(0,0,0,.5), 0 2px 6px rgba(0,0,0,.3); }
+  :root { --accent: #CCCCFF; --accent-ink: #1e1e3c; --c-model: #CCCCFF; --c-model-ink: #1e1e3c; --c-tool: #d95926; --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --soft: #c4c3bc; --muted: #8d8c85; --line: #31312d;
+          --ok: #52c186; --bad: #ee6d61; --run: #CCCCFF; --warn: #e0a84a; --tint: #262623; --run-tint: #2a2a40;
+          --shadow: 0 10px 32px rgba(0,0,0,.5), 0 2px 6px rgba(0,0,0,.3); --elev: #2b2b28; }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink);
@@ -26,10 +28,16 @@ header h1 { font-size: 22px; margin: 0; letter-spacing: .02em; }
 .muted { color: var(--muted); }
 h2 { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: .08em; margin: 0 0 10px; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
-button, .btn { padding: 7px 14px; border: 0; border-radius: 8px; background: var(--ink); color: var(--bg); cursor: pointer;
+button, .btn { padding: 7px 14px; border: 0; border-radius: 8px; background: var(--accent); color: var(--accent-ink); font-weight: 500; cursor: pointer;
          font: inherit; font-size: 13.5px; white-space: nowrap; }
 button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
 button.ghost:hover { background: var(--tint); }
+button { transition: transform var(--d-micro) var(--e-micro), filter var(--d-lumin) var(--e-out), box-shadow var(--d-lumin) var(--e-out),
+         background-color var(--d-lumin) var(--e-out); }
+button:hover:not(:disabled) { transform: scale(1.02); filter: brightness(1.07); }
+button:active:not(:disabled) { transform: scale(.97); filter: brightness(.94); box-shadow: inset 0 1px 3px rgba(0,0,0,.28);
+         transition-duration: var(--d-feedback); }
+button:focus-visible { outline: 2px solid var(--run); outline-offset: 2px; }
 button:disabled { opacity: .35; cursor: default; }
 input[type=text], input[type=time], input[type=number], select, textarea {
   padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink);
@@ -39,13 +47,14 @@ textarea { width: 100%; resize: vertical; line-height: 1.6; }
 /* ── 工具列：下拉選單 + 選中的工作流 ── */
 .bar { display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 20px; flex-wrap: wrap; }
 .dd { position: relative; }
-.dd-btn { display: flex; align-items: center; gap: 8px; background: var(--tint); color: var(--ink); padding: 8px 12px;
+.dd-btn { display: flex; align-items: center; gap: 8px; background: var(--run-tint); color: var(--ink); padding: 8px 12px;
           font-weight: 600; font-size: 15px; min-width: 220px; justify-content: space-between; }
 .dd-btn .caret { color: var(--muted); font-size: 11px; }
-.menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 20; background: var(--panel); border: 1px solid var(--line);
+.menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 20; background: var(--elev); transform-origin: top left; border: 1px solid var(--line);
         border-radius: 10px; box-shadow: var(--shadow); padding: 6px; min-width: 100%; display: none; }
 .menu.open { display: block; }
-.menu.right { left: auto; right: 0; min-width: 180px; }
+.menu.right { left: auto; right: 0; min-width: 180px; transform-origin: top right; }
+.menu .item, .menu .plain, .run, .dd-btn { transition: background-color var(--d-lumin) var(--e-out); }
 .menu .item { display: grid; grid-template-columns: 10px 1fr auto; gap: 10px; align-items: center; padding: 8px 10px;
               border-radius: 7px; cursor: pointer; white-space: nowrap; }
 .menu .item:hover, .menu .item.cur { background: var(--tint); }
@@ -60,8 +69,9 @@ textarea { width: 100%; resize: vertical; line-height: 1.6; }
 .switch { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--soft); cursor: pointer; user-select: none; }
 .switch input { display: none; }
 .switch .tr { width: 32px; height: 18px; border-radius: 9px; background: var(--line); position: relative; transition: background .2s; }
+.switch .tr { transition: background-color var(--d-lumin) var(--e-out) !important; }
 .switch .tr::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
-                     background: var(--panel); transition: transform .2s cubic-bezier(.2,.8,.2,1); box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+                     background: var(--panel); transition: transform var(--d-micro) var(--e-micro); box-shadow: 0 1px 2px rgba(0,0,0,.25); }
 .switch input:checked + .tr { background: var(--ok); }
 .switch input:checked + .tr::after { transform: translateX(14px); }
 .bar .runin { width: 220px; }
@@ -78,15 +88,65 @@ textarea { width: 100%; resize: vertical; line-height: 1.6; }
 .track .s { font-size: 12.5px; padding: 3px 10px; border-radius: 999px; background: var(--tint); color: var(--soft); }
 .track .s.err { color: var(--bad); }
 .track .s.cur { background: var(--run-tint); color: var(--run); font-weight: 600; }
+.run.sel, .menu .item.cur { background: var(--run-tint) !important; }
 .track .arrow { color: var(--muted); font-size: 11px; }
 .doing { display: flex; gap: 10px; align-items: center; font-size: 16px; }
 .pulse { width: 10px; height: 10px; border-radius: 50%; background: var(--run); flex: none; animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 0%,100% { opacity: .35; transform: scale(.85); } 50% { opacity: 1; transform: scale(1); } }
-@media (prefers-reduced-motion: reduce) { .pulse, .switch .tr::after { animation: none; transition: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .pulse { animation: none; }
+  /* 減少動態：拿掉位移和縮放，保留不透明度和顏色（SKILL §5、配方 §25） */
+  button:hover:not(:disabled), button:active:not(:disabled) { transform: none; }
+  .switch .tr::after, .prog .pb div { transition-property: none; }
+}
 .doing .sec { color: var(--muted); font-size: 13px; }
 .stream { margin-top: 10px; background: var(--tint); border-radius: 8px; padding: 12px 14px; max-height: 240px; overflow: auto;
           white-space: pre-wrap; word-break: break-word; font-size: 13.5px; line-height: 1.7; color: var(--soft); }
 .stream-label { font-size: 12px; color: var(--muted); margin-top: 10px; }
+
+/* ── 時間條 ── */
+.tbar { display: flex; gap: 2px; height: 26px; margin: 4px 0 6px; border-radius: 6px; overflow: hidden; }
+.tbar .seg { min-width: 3px; display: flex; align-items: center; padding: 0 7px; font-size: 12px; color: #fff; white-space: nowrap;
+             overflow: hidden; text-overflow: ellipsis; cursor: default; }
+.tbar .seg.model { background: var(--c-model); color: var(--c-model-ink); }
+.tbar .seg.tool { background: var(--c-tool); }
+.tbar .seg.error { background: var(--bad); }
+.tbar .seg.now { background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.35) 0 6px, transparent 6px 12px);
+                 background-size: 17px 17px; animation: slide 1s linear infinite; }
+@keyframes slide { to { background-position: 17px 0; } }
+@media (prefers-reduced-motion: reduce) { .tbar .seg.now { animation: none; } }
+.tlegend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12.5px; color: var(--soft); }
+.tlegend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+
+/* ── 過程：按輪分組 ── */
+.rounds { display: flex; flex-direction: column; gap: 10px; }
+.round { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
+.round .rh { display: flex; gap: 10px; align-items: baseline; }
+.round .rn { flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--tint); color: var(--soft);
+             font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; }
+.round .rt { font-weight: 500; }
+.round .rt small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+.round .said { color: var(--soft); font-size: 13.5px; margin: 4px 0 0 32px; }
+.acts { margin: 6px 0 0 32px; display: flex; flex-direction: column; gap: 4px; }
+.act-row { display: grid; grid-template-columns: 18px 1fr auto; gap: 8px; font-size: 14px; align-items: baseline; }
+.act-row .ic { font-weight: 700; }
+.act-row .ic.ok { color: var(--ok); } .act-row .ic.bad { color: var(--bad); }
+.act-row .res { color: var(--muted); font-size: 13px; }
+.act-row .ms { color: var(--muted); font-size: 12px; }
+.round details { margin: 4px 0 0 32px; }
+.round details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+.round pre { background: var(--tint); padding: 10px; border-radius: 6px; white-space: pre-wrap; word-break: break-word;
+             font: 12px/1.5 ui-monospace, Menlo, monospace; max-height: 300px; overflow: auto; margin: 6px 0 0; }
+
+/* ── 現在：新版 ── */
+.now-what { font-size: 18px; font-weight: 600; display: flex; gap: 10px; align-items: center; margin: 10px 0 2px; }
+.now-what .sec { font-size: 13px; font-weight: 400; color: var(--muted); }
+.prog { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--muted); margin: 8px 0 10px; }
+.prog .pb { flex: 1; max-width: 260px; height: 5px; background: var(--tint); border-radius: 3px; overflow: hidden; }
+.prog .pb div { height: 100%; width: 100%; background: var(--run); border-radius: 3px; transform-origin: left;
+                transition: transform var(--d-layout) var(--e-layout), background-color var(--d-lumin) var(--e-out); }
+.prog .pb div.hot { background: var(--warn); }
+.recent { margin-top: 10px; }
 
 /* ── 紀錄 + 詳情 ── */
 .grid { display: grid; grid-template-columns: 390px 1fr; gap: 20px; align-items: start; }
@@ -95,7 +155,10 @@ textarea { width: 100%; resize: vertical; line-height: 1.6; }
        border-bottom: 1px solid var(--line); cursor: pointer; }
 .run:last-child { border-bottom: 0; }
 .run:hover { background: var(--tint); }
-.run.sel { background: var(--tint); box-shadow: inset 3px 0 0 var(--run); }
+.run.sel { background: var(--tint); }
+#runs { position: relative; overflow: hidden; }
+.sel-ind { position: absolute; left: 0; top: 0; width: 3px; height: 1px; background: var(--run); transform-origin: top left;
+           opacity: 0; z-index: 2; pointer-events: none; }
 .run .main { min-width: 0; }
 .run .main .t { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run .main .m { color: var(--muted); font-size: 12.5px; }
@@ -133,11 +196,16 @@ textarea { width: 100%; resize: vertical; line-height: 1.6; }
 .steps details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 .steps pre, .raw pre { background: var(--tint); padding: 10px; border-radius: 6px; white-space: pre-wrap; word-break: break-word;
              font: 12px/1.5 ui-monospace, Menlo, monospace; max-height: 300px; overflow: auto; margin: 6px 0 0; }
+.dhead { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.menu label.plain { display: flex; gap: 8px; align-items: center; color: var(--soft); font-size: 13px; }
+.menu .plain small { color: var(--muted); margin-left: 6px; }
+.toast { position: fixed; bottom: 20px; left: 50%; margin-left: -120px; width: 240px; text-align: center; background: var(--ink); color: var(--bg);
+         padding: 8px 16px; border-radius: 8px; font-size: 14px; z-index: 50; box-shadow: var(--shadow); }
 details.raw { margin-top: 22px; color: var(--muted); font-size: 13px; }
 .empty { color: var(--muted); padding: 40px 20px; text-align: center; }
 
 /* ── 編輯表單 ── */
-dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--ink); padding: 0;
+dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--elev); color: var(--ink); padding: 0;
          width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 48px); box-shadow: var(--shadow); }
 dialog::backdrop { background: rgba(0,0,0,.35); }
 .dlg-h { padding: 18px 22px 0; font-size: 18px; font-weight: 600; }
@@ -181,7 +249,7 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
   <div class="grid">
     <section>
       <h2 id="runs-title">最近的執行</h2>
-      <div class="panel" id="runs"></div>
+      <div class="panel" id="runs"><div class="sel-ind" id="sel-ind"></div><div id="runs-list"></div></div>
     </section>
     <section>
       <h2>內容</h2>
@@ -198,7 +266,7 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
       <div class="row" id="ed-name-row"><label>代號</label><div>
         <input type="text" class="full" name="name" placeholder="例如 disk-watch" pattern="[a-z0-9][a-z0-9-]*">
         <div class="hint">英文小寫、數字、連字號，建立後不能改；也是檔名</div></div></div>
-      <div class="row"><label>說明</label><input type="text" class="full" name="description" placeholder="一句話說它解決什麼問題"></div>
+      <div class="row"><label>說明</label><div><input type="text" class="full" name="description" placeholder="一句話說它解決什麼問題"><div class="hint">也會一起交給模型，網址、repo 這類目標可以寫這裡</div></div></div>
       <div class="row"><label>什麼時候跑</label><div class="inl">
         <select name="sched_kind">
           <option value="manual">手動執行</option><option value="daily">每天固定時間</option><option value="every">每隔一段時間</option>
@@ -232,11 +300,64 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 
 <script>
 const $ = s => document.querySelector(s);
+
+// ── 動態：照 Dynamization（~/Dynamization-src）的 token 與配方 ──────────
+// 執行環境：WAAPI，第 2 層（可中斷、速度歸零）→ 從「當下的值」重新出發，彈簧 b ≤ 0.15
+const reduced = matchMedia("(prefers-reduced-motion: reduce)");
+const E = {out: "cubic-bezier(.25,.1,.35,1)", in: "cubic-bezier(.4,0,1,1)"};
+function bake(Dv, b, N = 20) {            // spring.md §4 閉式解 + §5 取樣；時長用 t_settle，不是 Dv（errata A2）
+  const z = 1 - b, w = 2 * Math.PI / Dv;
+  const d = z < 1
+    ? (t => { const wd = w * Math.sqrt(1 - z * z); return Math.exp(-z * w * t) * (-Math.cos(wd * t) - (z * w / wd) * Math.sin(wd * t)); })
+    : (t => -Math.exp(-w * t) * (1 + w * t));
+  let T = 0;
+  for (let t = 0; t < Dv * 6; t += 0.0005) if (Math.abs(d(t)) >= 0.005) T = t;
+  T = Math.round((T + 0.0005) * 100) / 100;
+  const pts = []; for (let i = 0; i <= N; i++) pts.push(i === N ? 1 : +(1 + d(i / N * T)).toFixed(4));
+  return {duration: Math.round(T * 1000), easing: `linear(${pts.join(", ")})`};
+}
+const S = {                                 // recipes §0 的 token；micro 依配方 §4 用 spring(0.15, 0)
+  micro: bake(0.15, 0), enter: bake(0.3, 0.15), layout: bake(0.35, 0), page: bake(0.5, 0.1),
+  menu: bake(0.25, 0.1), dialog: bake(0.28, 0.1),
+};
+const T = {feedback: {duration: 120, easing: E.out}, lumin: {duration: 130, easing: E.out},
+           fade: {duration: 250, easing: E.out}, fadeFast: {duration: 150, easing: E.out}, exit: {duration: 150, easing: E.in}};
+// 給 CSS 用的同一組 token
+for (const [k, v] of Object.entries({micro: S.micro, layout: S.layout}))
+  document.documentElement.style.setProperty(`--e-${k}`, v.easing), document.documentElement.style.setProperty(`--d-${k}`, v.duration + "ms");
+for (const [k, v] of Object.entries({feedback: T.feedback, lumin: T.lumin}))
+  document.documentElement.style.setProperty(`--d-${k}`, v.duration + "ms");
+document.documentElement.style.setProperty("--e-out", E.out);
+
+// 同一個通道只留一條動畫：先把當下的值寫回元素再取消，新動畫從那裡出發（waapi.md「Interruption」）
+function anim(el, kf, opts, id) {
+  if (!el) return null;
+  const pe = opts.pseudoElement || null;
+  for (const a of el.getAnimations({subtree: true}))
+    if (a.id === id && a.effect?.target === el && (a.effect.pseudoElement || null) === pe) {
+      if (!pe) { try { a.commitStyles(); } catch {} }
+      a.cancel();
+    }
+  const a = el.animate(kf, {fill: "both", ...opts}); a.id = id;
+  return a;
+}
+// 位移/縮放在減少動態時拿掉，不透明度保留
+const move = (el, kf, opts) => reduced.matches ? null : anim(el, kf, opts, "move");
+const fade = (el, kf, opts) => anim(el, kf, opts, "fade");
+function enterEl(el, delay = 0, dy = 8) {           // 配方 §1
+  fade(el, {opacity: [0, 1]}, {...T.fade, delay});
+  move(el, {transform: [`translateY(${dy}px)`, "none"]}, {...S.enter, delay});
+}
+function settle(el) {                                // 動畫結束後把 fill 拿掉，免得一直掛在元素上（waapi.md「Fill」）
+  for (const a of el.getAnimations()) a.finished.then(() => { try { a.commitStyles(); } catch {} a.cancel(); }, () => {});
+}
+
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 let WF = {}, WFS = [], PROV = {}, SKILLS = [], selWf = null, selRun = null, showAll = false, lastSig = {}, editing = null;
 
 // ── 白話化 ─────────────────────────────────────────
-const STATUS = {success: ["成功", "ok"], failed: ["失敗", "bad"], running: ["執行中", "run"], interrupted: ["中斷", "warn"]};
+const STATUS = {success: ["成功", "ok"], failed: ["失敗", "bad"], running: ["執行中", "run"], interrupted: ["中斷", "warn"],
+                cancelled: ["已停止", "warn"]};
 const PROVIDER = {lmstudio: "本機", deepseek: "DeepSeek"};
 
 function modelName(id, provider) {
@@ -273,9 +394,11 @@ function schedText(s) {
 }
 function humanError(e) {
   e = e || "";
+  if (/^Traceback/.test(e)) e = e.trim().split("\n").pop();   // 舊紀錄存的是整段 traceback，只取最後一行
+  e = e.replace(/^\w*Error: /, "");
   if (/DEEPSEEK_API_KEY/.test(e)) return "DeepSeek 還沒設定 API key，所以連不上。";
   if (/timed out/i.test(e)) return "模型太久沒有回應（逾時）。通常是讀進去的內容太多。";
-  if (/max_steps/.test(e)) return "步驟用完了還沒做完，agent 可能在繞圈子。";
+  if (/max_steps/.test(e)) return "步驟用完了還沒做完，agent 可能在繞圈子。看下面的過程，通常是一直重試同一件失敗的事。";
   if (/Connection refused|URLError/.test(e)) return "連不上模型伺服器，LM Studio 可能沒開。";
   return e;
 }
@@ -294,15 +417,19 @@ const SKILL_TEXT = {
   save_report:     a => ["存成報告", `「${a.title || ""}」`],
   notify:          a => ["跳通知給你", `「${a.message || ""}」`],
   create_workflow: a => ["建立新的工作流", a.name],
+  web_search:      a => ["搜尋網路", `「${a.query || ""}」`],
+  github_repo:     a => ["查看 GitHub repo", (a.repo || "").replace(/^https?:\/\/github\.com\//, "") + (a.path ? " / " + a.path : "")],
 };
 function describe(name, args) {
   const f = SKILL_TEXT[name]; const a = parseArgs(args);
-  return f ? f(a) : [`使用 ${name}`, ""];
+  const [v, o] = f ? f(a) : [`使用 ${name}`, ""];
+  return [v, /^「?\s*」?$/.test(o || "") || /^\s*\/\s*$/.test(o || "") ? "" : o];   // 參數還沒串流完時不要顯示空的「」
 }
 function resultSummary(name, out) {
   out = out || "";
   if (out.startsWith("[skill 錯誤]")) return {err: true, text: out.replace("[skill 錯誤]", "出錯：")};
   if (/^(找不到|這個路徑不|沒有這個|只接受)/.test(out)) return {err: true, text: out.split("\n")[0].slice(0, 120)};
+  if (name === "web_search") { const n = (out.match(/^\d+\. /gm) || []).length; return n ? {text: `找到 ${n} 筆`} : {err: true, text: "沒有結果"}; }
   if (name === "read_rss") return {text: `拿到 ${(out.match(/^\d+\. /gm) || []).length} 則`};
   if (name === "http_check") return {err: !out.startsWith("OK"), text: out.split("\n")[0].replace(/^(OK|DOWN|PROBLEM) \S+：/, m => m.startsWith("OK") ? "正常，" : "異常，")};
   if (name === "system_status") return {text: out.split("\n").slice(0, 1).join("")};
@@ -403,17 +530,21 @@ function renderBar() {
   $("#wf-actions").innerHTML =
     (manual ? "" : `<label class="switch" title="開關排程"><input type="checkbox" data-enable ${w.enabled ? "checked" : ""}><span class="tr"></span>排程</label>`) +
     (manual ? `<input type="text" class="runin" placeholder="要處理什麼？" value="${esc(keep)}">` : "") +
-    `<button data-run ${w.running ? "disabled" : ""}>${w.running ? "執行中…" : "立即執行"}</button>`;
+    (w.running ? `<button class="ghost" data-stop style="color:var(--bad)">停止</button>` : `<button data-run>立即執行</button>`);
   $("#more-menu").innerHTML = `<span class="plain" data-act="edit">編輯設定</span><span class="plain" data-act="new">＋ 新增工作流</span>
     <div class="sep"></div><span class="plain danger" data-act="delete">刪除這條工作流</span>`;
 }
 
 // ── 紀錄清單 ───────────────────────────────────────
+let runsKey = null;
 function renderRuns(runs) {
+  const box = $("#runs-list");
+  const before = Object.fromEntries([...box.querySelectorAll("[data-rid]")].map(el => [el.dataset.rid, el.getBoundingClientRect().top]));
+  const key = `${selWf}|${showAll}`, fresh = key !== runsKey; runsKey = key;
   const list = runs.filter(r => !selWf || r.workflow === selWf);
   const shown = showAll ? list : list.slice(0, 10);
   $("#runs-title").textContent = selWf ? `「${WF[selWf]?.title || selWf}」的執行紀錄` : "最近的執行";
-  $("#runs").innerHTML = shown.map(r => {
+  box.innerHTML = shown.map(r => {
     const st = STATUS[r.status];
     const took = r.finished ? dur(r.finished - r.started) : r.status === "running" ? "進行中" : "";
     return `<div class="run ${r.id === selRun ? "sel" : ""}" data-rid="${r.id}">
@@ -424,46 +555,164 @@ function renderRuns(runs) {
     </div>`;
   }).join("") + (list.length > shown.length ? `<div class="more" data-more>再顯示 ${list.length - shown.length} 筆</div>` : "")
     || '<div class="empty">還沒有執行紀錄</div>';
+  const rows = [...box.querySelectorAll("[data-rid]")];
+  if (fresh) {
+    // 換了篩選：整串由上往下錯開進場，interval × count ≤ 0.5s
+    fade(box, {opacity: [0, 1]}, T.fadeFast);
+    rows.slice(0, 12).forEach((el, i) => enterEl(el, 60 + i * 40));
+  } else {
+    // 同一串更新：舊列從原位置滑到新位置，新列從上方進場（FLIP）
+    for (const el of rows) {
+      const old = before[el.dataset.rid], now = el.getBoundingClientRect().top;
+      if (old === undefined) enterEl(el, 0, -8);
+      else if (Math.abs(old - now) > 1) move(el, {transform: [`translateY(${old - now}px)`, "none"]}, S.layout);
+    }
+  }
+  placeSelInd(fresh);
+}
+let indY = null;
+function placeSelInd(jump) {
+  const ind = $("#sel-ind"), row = $("#runs-list .run.sel");
+  if (!row) { fade(ind, {opacity: [0]}, T.exit); indY = null; return; }
+  const y = row.offsetTop, h = row.offsetHeight;
+  ind.style.height = h + "px";
+  if (indY === null || jump || reduced.matches) {
+    ind.style.transform = `translateY(${y}px)`; fade(ind, {opacity: [1]}, T.lumin);
+  } else if (indY !== y) {
+    anim(ind, {transform: [`translateY(${indY}px)`, `translateY(${y}px)`]}, S.layout, "move");
+  }
+  indY = y;
 }
 
 // ── 詳情 ───────────────────────────────────────────
-function timeline(steps) {
-  const items = [];
+// 把 steps 切成「輪」：每輪 = 一次模型呼叫 + 它決定做的動作
+function toRounds(steps) {
+  const rounds = [];
   for (const s of steps) {
-    if (s.kind === "llm") {
-      const o = parseArgs(s.output); const said = (o.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-      const final = !(o.tool_calls || []).length;
-      if (!s.input && (!said || final)) continue;
-      items.push(`<li class="think"><div class="h">思考<small>${dur(s.ms / 1000)}</small></div>
-        ${said && !final ? `<div class="sub">${esc(said.slice(0, 300))}${said.length > 300 ? "…" : ""}</div>` : ""}
-        ${s.input ? `<details><summary>看思考過程（${s.input.length.toLocaleString()} 字）</summary><pre>${esc(s.input)}</pre></details>` : ""}</li>`);
-    } else if (s.kind === "tool") {
-      const [verb, obj] = describe(s.name, s.input); const r = resultSummary(s.name, s.output);
-      items.push(`<li class="${r.err ? "error" : "tool"}"><div class="h">${esc(verb)}${obj ? "：" + esc(obj) : ""}<small>${s.ms >= 1000 ? dur(s.ms/1000) : s.ms + " ms"}</small></div>
-        <div class="sub ${r.err ? "bad-text" : ""}">${esc(r.text)}</div>
-        <details><summary>看原始內容</summary><pre>${esc(s.input)}</pre><pre>${esc(s.output)}</pre></details></li>`);
-    } else {
-      const fb = (s.output || "").match(/→ 改用備援 (\S+)/);
-      items.push(`<li class="error"><div class="h">${fb ? `${PROVIDER[s.name] || s.name}出錯，改用 ${PROVIDER[fb[1]] || fb[1]}` : "執行中斷"}</div>
-        <div class="sub bad-text">${esc(humanError((s.output || "").split("\n")[0]))}</div>
-        <details><summary>看錯誤細節</summary><pre>${esc(s.output)}</pre></details></li>`);
-    }
+    if (s.kind === "llm") rounds.push({llm: s, acts: []});
+    else (rounds[rounds.length - 1] || (rounds[0] = {llm: null, acts: []})).acts.push(s);
   }
-  return items.length ? `<ol class="steps">${items.join("")}</ol>` : '<div class="muted">沒有中間步驟</div>';
+  return rounds;
+}
+function segLabel(s) {
+  if (s.kind === "llm") { const o = parseArgs(s.output); return (o.tool_calls || []).length ? "讀資料、想下一步" : "寫結果"; }
+  if (s.kind === "tool") return describe(s.name, s.input)[0];
+  return "出錯";
+}
+// 橫向時間條：每段寬度 = 花的時間；夠寬才寫字，滑過去看完整說明
+function timeBar(steps, live) {
+  const segs = steps.filter(s => s.kind !== "error" || s.ms).map(s => ({
+    cls: s.kind === "llm" ? "model" : s.kind === "tool" ? (resultSummary(s.name, s.output).err ? "error" : "tool") : "error",
+    sec: Math.max((s.ms || 0) / 1000, 0.05), label: segLabel(s),
+    tip: s.kind === "tool" ? describe(s.name, s.input).filter(Boolean).join("：") : segLabel(s)}));
+  if (live) segs.push({cls: (live.tool ? "tool" : "model") + " now", sec: Math.max(live.sec, 0.05), label: live.label, tip: live.label + "（進行中）"});
+  const total = segs.reduce((a, b) => a + b.sec, 0) || 1;
+  const model = segs.filter(x => x.cls.startsWith("model")).reduce((a, b) => a + b.sec, 0);
+  const tool = total - model;
+  return `<div class="tbar">${segs.map(x => { const pct = x.sec / total * 100;
+      return `<div class="seg ${x.cls}" style="flex:${pct} 0 0" title="${esc(x.tip)} · ${dur(x.sec) || "不到 1 秒"}">${pct > 9 ? esc(x.label) + " " + (dur(x.sec) || "") : ""}</div>`; }).join("")}</div>
+    <div class="tlegend"><span><i style="background:var(--c-model)"></i>模型在讀、在想：${dur(model) || "不到 1 秒"}（${Math.round(model / total * 100)}%）</span>
+      <span><i style="background:var(--c-tool)"></i>使用工具：${dur(tool) || "不到 1 秒"}（${Math.round(tool / total * 100)}%）</span></div>`;
+}
+function actRow(s, withRaw) {
+  if (s.kind === "tool") {
+    const [v, o] = describe(s.name, s.input), r = resultSummary(s.name, s.output);
+    return `<div class="act-row"><span class="ic ${r.err ? "bad" : "ok"}">${r.err ? "✕" : "✓"}</span>
+      <span>${esc(v)}${o ? "：" + esc(o) : ""} <span class="res">— ${esc(r.text)}</span></span>
+      <span class="ms">${s.ms >= 1000 ? dur(s.ms / 1000) : s.ms + " ms"}</span></div>` +
+      (withRaw ? `<details style="margin:0 0 0 26px"><summary>原始內容</summary><pre>${esc(s.input)}</pre><pre>${esc(s.output)}</pre></details>` : "");
+  }
+  const fb = (s.output || "").match(/→ 改用備援 (\S+)/);
+  const head = fb ? `${PROVIDER[s.name] || s.name}出錯，改用 ${PROVIDER[fb[1]] || fb[1]}` : s.name === "cancelled" ? "你按了停止" : "沒有完成";
+  const rawErr = /^\{"raw"/.test(s.input || "") ? parseArgs(s.input).raw : null;
+  const tb = rawErr ? "" : s.input || (/^Traceback/.test(s.output || "") ? s.output : "");
+  return `<div class="act-row"><span class="ic bad">✕</span><span>${head} <span class="res">— ${esc(humanError(fb ? (s.output || "").split("\n")[0] : s.output))}</span></span><span></span></div>` +
+    (withRaw && tb ? `<details style="margin:0 0 0 26px"><summary>技術細節（給工程師）</summary><pre>${esc(tb)}</pre></details>` : "") +
+    (withRaw && rawErr ? `<div style="margin-left:26px">${rawBlock(rawErr, "")}</div>` : "");
+}
+// LM Studio 的原始輸出：模型實際寫了什麼、為什麼停
+const STOP = {eosFound: "正常結束", maxPredictedTokensReached: "到達長度上限", userStopped: "被停止",
+              stopStringFound: "遇到停止字串", toolCalls: "呼叫工具", failed: "失敗", contextLengthReached: "context 滿了"};
+function rawClean(t) {
+  return String(t || "").replace(/<think>[\s\S]*?<\/think>/g, "").replace(/<tool_call>[\s\S]*?(<\/tool_call>|$)/g, "").trim();
+}
+function rawBlock(raw, content) {
+  if (!raw) return "";
+  const st = raw.stats || {};
+  const why = STOP[st.stopReason] || st.stopReason || "不明";
+  const got = (content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim(), orig = rawClean(raw.output);
+  // 我們收到的內容應該是原文（去掉工具呼叫標記）的開頭；對不上就是 LM Studio 在中間吞了東西
+  const head = s => s.replace(/\s+/g, "").slice(0, 24);
+  const mismatch = got && orig && !head(orig).startsWith(head(got).slice(0, 12)) && !head(got).startsWith(head(orig).slice(0, 12));
+  const lost = !got && orig && !/<tool_call>/.test(raw.output);
+  const warn = mismatch ? `收到的內容和模型原文對不上（原文開頭是「${esc(orig.slice(0, 20))}」，收到的是「${esc(got.slice(0, 20))}」）`
+             : lost ? "模型有寫東西，但我們什麼都沒收到" : "";
+  return `${warn ? `<div class="said bad-text">⚠ ${warn}</div>` : ""}
+    <details><summary>模型原始輸出（${why}${st.tokensPerSecond ? `，${Math.round(st.tokensPerSecond)} tok/s` : ""}${st.predictedTokensCount ? `，寫了 ${st.predictedTokensCount} tokens` : ""}）</summary><pre>${esc(raw.output)}</pre></details>`;
+}
+function timeline(steps) {
+  if (!steps.length) return '<div class="muted">沒有中間步驟</div>';
+  const rounds = toRounds(steps);
+  return timeBar(steps) + `<div class="rounds" style="margin-top:14px">` + rounds.map((rd, i) => {
+    const o = rd.llm ? parseArgs(rd.llm.output) : {};
+    const said = (o.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    const final = rd.llm && !(o.tool_calls || []).length;
+    const verb = !rd.llm ? "" : final ? "寫出結果" : (o.tool_calls || []).length > 1 ? `決定做 ${o.tool_calls.length} 件事` : "決定下一步";
+    return `<div class="round">
+      <div class="rh"><span class="rn">${i + 1}</span><span class="rt">${verb || "開始前"}${rd.llm ? `<small>模型花了 ${dur(rd.llm.ms / 1000) || "不到 1 秒"}</small>` : ""}</span></div>
+      ${said && !final ? `<div class="said">${esc(said.slice(0, 240))}${said.length > 240 ? "…" : ""}</div>` : ""}
+      ${rd.acts.length ? `<div class="acts">${rd.acts.map(a => actRow(a, true)).join("")}</div>` : ""}
+      ${rd.llm ? rawBlock(o.raw, o.content) : ""}
+      ${rd.llm?.input ? `<details><summary>看思考過程（${rd.llm.input.length.toLocaleString()} 字）</summary><pre>${esc(rd.llm.input)}</pre></details>` : ""}
+    </div>`;
+  }).join("") + `</div>`;
 }
 
+let shownRun = null, swapToken = 0;
 async function loadDetail() {
-  if (!selRun) { $("#detail").innerHTML = '<div class="empty">還沒有執行紀錄</div>'; return; }
-  const d = await j("/api/runs/" + selRun);
+  if (!selRun) { $("#detail").innerHTML = '<div class="empty">還沒有執行紀錄</div>'; shownRun = null; return; }
+  const want = selRun;
+  const d = await j("/api/runs/" + want);
+  if (want !== selRun) return;
+  DETAIL = d;
+  if (menuOpen["export-menu"]) return;                        // 選單開著時不要重畫，免得它被關掉
   if (!changed("detail", [d, Math.floor(Date.now() / 60000)])) return;
+  const swap = shownRun !== null && shownRun !== want, first = shownRun === null;
+  const el = $("#detail"), token = ++swapToken;
+  if (swap) {
+    fade(el, {opacity: [0]}, T.exit);
+    move(el, {transform: ["translateY(-8px)"]}, T.exit);
+    await new Promise(r => setTimeout(r, 150));
+    if (token !== swapToken) return;                           // 中途又換了一筆：交給新的那次
+  }
+  shownRun = want;
+  renderDetail(d);
+  if (swap || first) {
+    fade(el, {opacity: [0, 1]}, T.fade);
+    move(el, {transform: ["translateY(8px)", "none"]}, S.page);
+  }
+}
+function renderDetail(d) {
   const r = d.run, st = STATUS[r.status];
   const took = r.finished ? `，花了 ${dur(r.finished - r.started)}` : "";
   $("#detail").innerHTML = `
-    <p class="t">${esc(WF[r.workflow]?.title || r.workflow)} <span class="${st[1]}-text" style="font-size:15px">${st[0]}</span></p>
+    <div class="dhead"><p class="t">${esc(WF[r.workflow]?.title || r.workflow)} <span class="${st[1]}-text" style="font-size:15px">${st[0]}</span></p>
+      ${r.status === "running" ? "" : `<div class="dd"><button class="ghost" data-toggle="export-menu">匯出 ▾</button>
+        <div class="menu right" id="export-menu" style="min-width:230px">
+          <span class="plain" data-export="docx">Word<small>.docx</small></span>
+          <span class="plain" data-export="pdf">PDF<small>.pdf</small></span>
+          <span class="plain" data-export="md">Markdown<small>.md</small></span>
+          <span class="plain" data-export="html">網頁<small>.html</small></span>
+          <span class="plain" data-export="txt">純文字<small>.txt</small></span>
+          <span class="plain" data-export="json">完整原始資料<small>.json</small></span>
+          <div class="sep"></div>
+          <label class="plain"><input type="checkbox" id="export-steps" ${exportSteps ? "checked" : ""}>附上執行過程</label>
+        </div></div>`}</div>
     <div class="m">${when(r.started)}${r.trigger === "schedule" ? "排程" : "手動"}開始${took}，使用 ${esc(modelName(r.model, r.provider))}</div>
     ${r.status === "running" ? `<div class="section">結果</div><div class="run-text">還在跑，看上面「現在」那一區</div>` : ""}
     ${r.output ? `<div class="section">結果</div><div class="result">${md(r.output)}</div>` : ""}
-    ${r.error ? `<div class="section">哪裡出錯</div><div class="errbox">${esc(humanError(r.error))}</div>` : ""}
+    ${r.status === "cancelled" ? `<div class="section">結果</div><div class="muted">你在這裡停止了執行，沒有產出結果。</div>` : ""}
+    ${r.error && r.status !== "cancelled" ? `<div class="section">哪裡出錯</div><div class="errbox">${esc(humanError(r.error))}</div>` : ""}
     ${r.status === "interrupted" ? `<div class="section">哪裡出錯</div><div class="errbox">執行到一半伺服器被重新啟動，這次沒有跑完。</div>` : ""}
     <div class="section">過程</div>${timeline(d.steps)}
     <details class="raw"><summary>技術細節</summary>
@@ -472,11 +721,84 @@ async function loadDetail() {
       <pre>${esc(r.input)}</pre></details>`;
 }
 
+// ── 匯出 ───────────────────────────────────────────
+let exportSteps = false, DETAIL = null;
+function exportDoc(d, withSteps) {
+  const r = d.run, title = WF[r.workflow]?.title || r.workflow, st = STATUS[r.status][0];
+  const started = new Date(r.started * 1000);
+  const stamp = started.toLocaleString("zh-TW", {year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false});
+  const meta = `${stamp} ${r.trigger === "schedule" ? "排程" : "手動"}執行 · ${st}` +
+    (r.finished ? ` · 花了 ${dur(r.finished - r.started)}` : "") + ` · ${modelName(r.model, r.provider)}`;
+  let body = r.output || (r.error ? `**沒有完成：** ${humanError(r.error)}` : "（沒有產出）");
+  let mdText = `# ${title}\n\n${meta}\n\n---\n\n${body}\n`;
+  if (withSteps) {
+    const lines = [];
+    for (const s of d.steps) {
+      if (s.kind === "tool") { const [v, o] = describe(s.name, s.input); const x = resultSummary(s.name, s.output);
+        lines.push(`${lines.length + 1}. ${v}${o ? "：" + o : ""} — ${x.err ? "失敗，" : ""}${x.text}`); }
+      else if (s.kind === "error") lines.push(`${lines.length + 1}. ${s.name === "cancelled" ? "使用者停止" : "出錯"} — ${humanError(s.output)}`);
+    }
+    if (lines.length) mdText += `\n---\n\n## 執行過程\n\n${lines.join("\n")}\n`;
+  }
+  const pad = n => String(n).padStart(2, "0");
+  const fname = `${title.replace(/[\\/:*?"<>|\s]+/g, "-")}-${started.getFullYear()}${pad(started.getMonth()+1)}${pad(started.getDate())}-${pad(started.getHours())}${pad(started.getMinutes())}`;
+  const html = `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><title>${esc(title)}</title><style>
+body{font:15px/1.7 -apple-system,"PingFang TC","Noto Sans TC",sans-serif;color:#1c1c1a;max-width:780px;margin:40px auto;padding:0 24px}
+h1{font-size:24px;margin:0 0 4px}h2{font-size:19px;margin:1.4em 0 .4em}h3,h4{font-size:16px;margin:1.2em 0 .3em}
+h1+p{color:#6b6b66;font-size:13.5px;margin-top:0}a{color:#2a5fc4;word-break:break-all}
+code{background:#f0efea;padding:1px 5px;border-radius:4px;font:12.5px ui-monospace,Menlo,monospace}
+pre{background:#f0efea;padding:12px;border-radius:6px;white-space:pre-wrap;word-break:break-word;font:12px/1.5 ui-monospace,Menlo,monospace}
+pre code{background:none;padding:0}table{border-collapse:collapse;margin:.6em 0}th,td{border:1px solid #cfcdc6;padding:6px 10px;text-align:left;vertical-align:top}
+th{background:#f0efea}hr{border:0;border-top:1px solid #e4e2dc;margin:1.4em 0}
+@media print{body{margin:0 auto}a{color:inherit}pre,table,li{break-inside:avoid}}
+</style></head><body>${md(mdText)}</body></html>`;
+  const txt = mdText.replace(/^#+\s*/gm, "").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1").replace(/^---$/gm, "────────");
+  return {fname, mdText, html, txt};
+}
+function toast(msg, ms = 2500) {
+  const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; document.body.appendChild(t);
+  enterEl(t);
+  t.leave = () => { fade(t, {opacity: [0]}, T.exit); move(t, {transform: ["translateY(4px)"]}, T.exit); setTimeout(() => t.remove(), 160); };
+  if (ms) setTimeout(t.leave, ms);
+  return t;
+}
+function save(blob, name) {
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+async function doExport(fmt) {
+  const d = DETAIL; if (!d) return;
+  const x = exportDoc(d, exportSteps);
+  const types = {md: "text/markdown", html: "text/html", txt: "text/plain", json: "application/json"};
+  if (fmt in types) {
+    const content = fmt === "md" ? x.mdText : fmt === "html" ? x.html : fmt === "txt" ? x.txt : JSON.stringify(d, null, 2);
+    return save(new Blob([content], {type: types[fmt] + ";charset=utf-8"}), `${x.fname}.${fmt}`);
+  }
+  const t = toast(fmt === "pdf" ? "正在產生 PDF…" : "正在產生 Word 檔…", 0);
+  try {
+    const r = await fetch("/api/export", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({format: fmt, html: x.html, filename: `${x.fname}.${fmt}`})});
+    if (!r.ok) throw new Error((await r.json()).error);
+    save(await r.blob(), `${x.fname}.${fmt}`);
+  } catch (e) { toast(e.message || "匯出失敗", 4000); }
+  finally { t.leave(); }
+}
+
 // ── 現在：即時動作與思考 ─────────────────────────────
 const liveSteps = {};
+const livePrev = {};                                  // 上一次畫面：用來判斷什麼是「新的」才需要動
+let nowShown = false;
 async function loadLive() {
   const live = await j("/api/live");
-  if (!live.length) { $("#now").innerHTML = ""; return false; }
+  const box = $("#now");
+  if (!live.length) {
+    if (nowShown) {                                    // 整區退場，然後才清掉（計時器，不綁 finished）
+      nowShown = false;
+      fade(box, {opacity: [0]}, T.exit); move(box, {transform: ["translateY(4px)"]}, T.exit);
+      setTimeout(() => { if (!nowShown) { box.innerHTML = ""; fade(box, {opacity: [1]}, {duration: 0}); move(box, {transform: ["none"]}, {duration: 0}); } }, 160);
+    }
+    return false;
+  }
   for (const L of live) {
     if (!liveSteps[L.run_id] || liveSteps[L.run_id].round !== L.round || L.phase === "waiting")
       liveSteps[L.run_id] = {round: L.round, steps: (await j("/api/runs/" + L.run_id)).steps};
@@ -484,33 +806,66 @@ async function loadLive() {
   const stick = Object.fromEntries([...document.querySelectorAll(".stream[data-k]")]
     .map(e => [e.dataset.k, e.scrollHeight - e.scrollTop - e.clientHeight < 30]));
   $("#now").innerHTML = `<h2>現在</h2>` + live.map(L => {
-    const done = liveSteps[L.run_id].steps.filter(s => s.kind !== "llm").map(s => {
-      if (s.kind === "tool") { const [v, o] = describe(s.name, s.input); const r = resultSummary(s.name, s.output);
-        return `<span class="s ${r.err ? "err" : ""}">${esc(v)}${o ? " " + esc(o.slice(0, 28)) : ""}</span>`; }
-      return `<span class="s err">出錯</span>`;
-    });
+    const steps = liveSteps[L.run_id].steps;
     const el = Math.max(0, Date.now() / 1000 - (L.since || L.started));
-    let doing, cur, stream = "";
+    let what, stream = "", label;
     if (L.phase === "tool" || L.phase === "deciding") {
       const [v, o] = describe(L.tool?.name, L.tool?.args);
-      cur = v; doing = (L.phase === "tool" ? "正在" : "決定要") + `${v}${o ? "：" + o : ""}`;
+      label = v; what = (L.phase === "tool" ? "正在" : "決定要") + v + (o ? `：${o}` : "");
     } else if (L.phase === "thinking") {
-      cur = "思考"; doing = "正在思考";
+      label = "思考"; what = "正在思考";
       stream = `<div class="stream-label">思考內容（即時）</div><div class="stream" data-k="${L.run_id}">${esc(L.reasoning)}</div>`;
     } else if (L.phase === "writing") {
-      cur = "寫結果"; doing = "正在寫結果";
+      label = "寫結果"; what = "正在寫結果";
       stream = `<div class="stream-label">正在寫的內容（即時）</div><div class="stream" data-k="${L.run_id}">${esc(L.content)}</div>`;
     } else {
-      cur = "閱讀"; doing = L.round === 1 ? "正在閱讀任務說明" : "正在消化剛才拿到的資料";
+      label = "讀資料"; what = L.round === 1 ? "正在閱讀任務說明" : "正在消化剛才拿到的資料";
     }
+    const max = WF[L.workflow]?.max_steps || 12, pct = Math.min(100, L.round / max * 100);
+    const idle = L.phase === "waiting" ? 0 : Date.now() / 1000 - (L.last_token || L.since || L.started);
+    const written = (L.content || "").length + (L.reasoning || "").length;
+    const stuck = L.broken ? `<div class="errbox" style="margin-top:10px">${esc(L.broken)}</div>` : idle > 45
+      ? `<div class="errbox" style="margin-top:10px">已經 ${dur(idle)} 沒有新的輸出${written ? `（目前只寫了 ${written} 字）` : ""}，模型可能卡住了。
+         可以按右上角的「停止」；就算不管它，單輪最多也只會寫 ${WF[L.workflow]?.max_tokens || 4096} tokens。</div>` : "";
+    // 最近的動作：連續相同的合併成一行
+    const acts = steps.filter(s => s.kind !== "llm"), groups = [];
+    for (const s of acts) {
+      const key = s.kind === "tool" ? s.name + (resultSummary(s.name, s.output).err ? "!" : "") : "err";
+      const g = groups[groups.length - 1];
+      if (g && g.key === key) { g.n++; g.last = s; } else groups.push({key, n: 1, last: s});
+    }
+    L._groups = groups.length; L._what = L.phase + "|" + label; L._pct = pct;   // 只有動作換了才算「換字」，補上網址不算
+    const prevPct = livePrev[L.run_id]?.pct ?? pct;
+    const recent = groups.slice(-4).map(g => g.n === 1 ? actRow(g.last, false)
+      : actRow(g.last, false).replace(/— /, `×${g.n}${g.key.endsWith("!") ? "，全部失敗" : ""}，最後一次 — `)).join("");
     return `<div class="live">
       <div class="live-head"><span class="t">${esc(L.title)}</span>
-        <span class="m">第 ${L.round} 輪 · 已經跑了 ${dur(Date.now()/1000 - L.started)} · ${esc(modelName(L.model, L.provider))}</span></div>
-      <div class="track">${[...done, `<span class="s cur">${esc(cur)}</span>`].join('<span class="arrow">→</span>')}</div>
-      <div class="doing"><span class="pulse"></span><span>${esc(doing)}</span><span class="sec">${dur(el)}</span></div>
+        <span class="m">已經跑了 ${dur(Date.now()/1000 - L.started)} · ${esc(modelName(L.model, L.provider))}
+        <button class="ghost" data-stop-live="${esc(L.workflow)}" style="margin-left:8px;padding:3px 10px;color:var(--bad)">停止</button></span></div>
+      <div class="now-what"><span class="pulse"></span><span>${esc(what)}</span><span class="sec">${dur(el) || "0 秒"}</span></div>
+      <div class="prog"><span>第 ${L.round} 輪，最多 ${max} 輪</span><div class="pb"><div class="${pct >= 75 ? "hot" : ""}" data-pct="${pct}" style="transform:scaleX(${prevPct / 100})"></div></div>
+        ${pct >= 75 ? `<span class="warn-text">快到上限了</span>` : ""}</div>
+      ${timeBar(steps, {sec: el, label, tool: L.phase === "tool"})}
+      ${stuck}
+      ${recent ? `<div class="recent acts" style="margin-left:0">${groups.length > 4 ? `<div class="muted" style="font-size:12.5px">…前面還有 ${groups.length - 4} 組動作</div>` : ""}${recent}</div>` : ""}
       ${stream}</div>`;
   }).join("");
   document.querySelectorAll(".stream[data-k]").forEach(e => { if (stick[e.dataset.k] !== false) e.scrollTop = e.scrollHeight; });
+  // 每次輪詢都會重畫，所以「動」只給真的變了的東西
+  if (!nowShown) { nowShown = true; enterEl(box); }
+  box.querySelectorAll(".live").forEach((card, i) => {
+    const L = live[i], p = livePrev[L.run_id];
+    if (!p) enterEl(card, 60);                                                    // 新的一張：容器先到（A6）
+    if (p && p.what !== L._what) {                                                 // 「正在做什麼」換了
+      const w = card.querySelector(".now-what");
+      fade(w, {opacity: [0.2, 1]}, T.fadeFast); move(w, {transform: ["translateY(4px)", "none"]}, S.micro);
+    }
+    if (p && L._groups > p.groups) enterEl(card.querySelector(".recent .act-row:last-of-type"));   // 新的一步
+    // 進度條：從上一次的比例長到這一次（先有起始值，下一幀才改，errata A5）
+    const bar = card.querySelector(".pb div");
+    requestAnimationFrame(() => { bar.style.transform = `scaleX(${bar.dataset.pct / 100})`; });
+    livePrev[L.run_id] = {what: L._what, groups: L._groups, pct: L._pct};
+  });
   return true;
 }
 
@@ -557,14 +912,35 @@ function openEditor(w) {
   f.task.value = w?.task || ""; f.system.value = w?.system || "你是自動執行任務的 agent，一律用繁體中文（台灣）。";
   f.max_steps.value = w?.max_steps || 12;
   syncSched();
-  $("#editor").showModal();
+  openEditor2();
   (w ? f.title : f.title).focus();
 }
 $("#ed-form").addEventListener("change", e => {
   if (e.target.name === "sched_kind") syncSched();
   if (e.target.name === "provider") { fillModels(e.target.value, ""); fillFallback(e.target.value, F().fallback.value); }
 });
-$("#ed-cancel").onclick = () => $("#editor").close();
+let editorOpen = false;
+function openEditor2() {
+  const dlg = $("#editor");
+  editorOpen = true;
+  if (!dlg.open) dlg.showModal();
+  // 遮罩先到位，內容再進場；從 scale .96、y +8 起跳，不從 scale 0（配方 §6）
+  anim(dlg, {opacity: [0, 1]}, {...T.fade, pseudoElement: "::backdrop", duration: 200}, "backdrop");
+  fade(dlg, {opacity: [0, 1]}, {...T.fade, delay: 60});
+  move(dlg, {transform: ["translateY(8px) scale(.96)", "none"]}, {...S.dialog, delay: 60});
+}
+function closeEditor() {
+  const dlg = $("#editor");
+  if (!editorOpen) return;
+  editorOpen = false;
+  fade(dlg, {opacity: [0]}, T.exit);
+  move(dlg, {transform: ["translateY(4px) scale(.98)"]}, T.exit);
+  // 遮罩最後才走
+  anim(dlg, {opacity: [1, 0]}, {...T.exit, pseudoElement: "::backdrop", delay: 90}, "backdrop");
+  setTimeout(() => { if (!editorOpen) dlg.close(); }, 260);
+}
+$("#editor").addEventListener("cancel", e => { e.preventDefault(); closeEditor(); });   // Esc 也走退場
+$("#ed-cancel").onclick = () => closeEditor();
 $("#ed-form").addEventListener("submit", async e => {
   e.preventDefault();
   const f = F(), k = f.sched_kind.value;
@@ -581,17 +957,41 @@ $("#ed-form").addEventListener("submit", async e => {
   $("#ed-save").disabled = false;
   if (!r.ok) { $("#ed-err").textContent = r.error || "儲存失敗"; return; }
   if (!editing) selWf = body.name;
-  $("#editor").close(); lastSig = {}; tick();
+  closeEditor(); lastSig = {}; tick();
 });
 
 // ── 互動 ───────────────────────────────────────────
 let armedDelete = false;
-function closeMenus(except) { document.querySelectorAll(".menu.open").forEach(m => { if (m.id !== except) m.classList.remove("open"); });
-  if (except !== "more-menu") armedDelete = false; }
-document.addEventListener("keydown", e => { if (e.key === "Escape") closeMenus(); });
+const menuOpen = {};                                 // 邏輯狀態是布林值，動畫只是朝它跑（errata C2）
+function openMenu(m) {
+  menuOpen[m.id] = true;
+  m.classList.add("open");
+  fade(m, {opacity: [0, 1]}, T.fadeFast);
+  move(m, {transform: ["translateY(-4px) scale(.95)", "none"]}, S.menu);
+  // 容器先打開，項目才倒進來（feel.md §6）：從 Dv 開始錯開 0.03
+  [...m.querySelectorAll(".item, .plain")].forEach((it, i) => {
+    fade(it, {opacity: [0, 1]}, {...T.fadeFast, delay: 200 + i * 30});
+    move(it, {transform: ["translateY(-3px)", "none"]}, {...S.micro, delay: 200 + i * 30});
+  });
+}
+function closeMenu(m) {
+  if (!menuOpen[m.id]) return;
+  menuOpen[m.id] = false;
+  // 內容先清空，容器才關上；退場比進場短、距離更短（金律 3）
+  [...m.querySelectorAll(".item, .plain")].forEach(it => fade(it, {opacity: [0]}, {duration: 80, easing: E.in}));
+  fade(m, {opacity: [0]}, {...T.exit, delay: 50});
+  move(m, {transform: ["translateY(-2px) scale(.98)"]}, {...T.exit, delay: 50});
+  // 移除用計時器，不綁在 finished 上（errata C1）
+  setTimeout(() => { if (!menuOpen[m.id]) { m.classList.remove("open"); tick(); } }, 220);
+}
+function closeMenus(except) {
+  document.querySelectorAll(".menu.open").forEach(m => { if (m.id !== except) closeMenu(m); });
+  if (except !== "more-menu" && armedDelete) { armedDelete = false; lastSig.bar = null; }   // 取消確認時，按鈕文字也要回來
+}
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#editor").open) closeMenus(); });
 document.addEventListener("click", async e => {
   const tg = e.target.closest("[data-toggle]");
-  if (tg) { const m = document.getElementById(tg.dataset.toggle); closeMenus(m.id); m.classList.toggle("open"); return; }
+  if (tg) { const m = document.getElementById(tg.dataset.toggle); closeMenus(m.id); menuOpen[m.id] ? closeMenu(m) : openMenu(m); return; }
 
   const pick = e.target.closest("[data-pick]");
   if (pick) { selWf = pick.dataset.pick || null; showAll = false; selRun = null; closeMenus(); lastSig = {}; tick(); return; }
@@ -620,10 +1020,22 @@ document.addEventListener("click", async e => {
     setTimeout(async () => { selRun = (await j("/api/runs?workflow=" + encodeURIComponent(selWf)))[0]?.id; lastSig = {}; tick(); }, 400);
     return;
   }
+  const ex = e.target.closest("[data-export]");
+  if (ex) { closeMenus(); doExport(ex.dataset.export); return; }
+  if (e.target.id === "export-steps") { exportSteps = e.target.checked; lastSig.detail = null; return; }
+  if (e.target.closest("#export-menu")) return;
+  const sl = e.target.closest("[data-stop-live]");
+  if (sl) { sl.disabled = true; sl.textContent = "停止中…"; await post(`/api/workflows/${encodeURIComponent(sl.dataset.stopLive)}/stop`); return; }
+  if (e.target.closest("[data-stop]")) {
+    const b = e.target.closest("[data-stop]"); b.disabled = true; b.textContent = "停止中…";
+    await post(`/api/workflows/${encodeURIComponent(selWf)}/stop`);
+    return;
+  }
   if (e.target.closest("[data-more]")) { showAll = true; lastSig.runs = null; tick(); return; }
   const r = e.target.closest("[data-rid]");
   if (r) { selRun = +r.dataset.rid; lastSig.runs = null; lastSig.detail = null; tick(); }
 });
+document.addEventListener("focusout", e => { if (e.target.classList?.contains("runin")) setTimeout(tick, 0); });
 document.addEventListener("change", async e => {
   if (e.target.matches("[data-enable]")) {
     const r = await post(`/api/workflows/${encodeURIComponent(selWf)}/enabled`, {enabled: e.target.checked});
@@ -634,9 +1046,10 @@ document.addEventListener("change", async e => {
 function alertBar(msg) { $("#wf-info").innerHTML = `<span class="bad-text">${esc(msg || "發生錯誤")}</span>`; }
 
 // ── 輪詢 ───────────────────────────────────────────
-let busy = false;
+let busy = false, again = false;
 async function tick() {
-  if (busy) return; busy = true;
+  if (busy) { again = true; return; }                     // 正在更新時的點擊不能丟掉，做完馬上再跑一次
+  busy = true;
   try {
     const [wfs, runs] = await Promise.all([j("/api/workflows"), j("/api/runs")]);
     WFS = wfs; WF = Object.fromEntries(wfs.map(w => [w.name, w]));
@@ -645,10 +1058,14 @@ async function tick() {
     if (!selRun || !visible.some(r => r.id === selRun)) selRun = visible[0]?.id || null;
     const minute = Math.floor(Date.now() / 60000);
     renderSummary(runs);
-    if (changed("bar", [wfs, selWf, minute]) && !document.querySelector(".menu.open") && document.activeElement?.className !== "runin") renderBar();
+    // 選單開著、或正在輸入時先不重畫，但也不能把這次變化記成「已處理」，否則之後永遠不會畫（errata C2：看布林值，不看 class）
+    const barBlocked = Object.values(menuOpen).some(Boolean) || document.activeElement?.classList.contains("runin");
+    if (!barBlocked && changed("bar", [wfs, selWf, minute])) renderBar();
     if (changed("runs", [runs, selRun, selWf, showAll, minute])) renderRuns(runs);
     await loadDetail();
-  } finally { busy = false; }
+  } catch {
+    $("#summary").innerHTML = `<span class="bad-text">連不上工作流伺服器</span>，可能正在重新啟動；恢復後會自動更新。`;
+  } finally { busy = false; if (again) { again = false; tick(); } }
 }
 async function liveLoop() {
   let active = false;
