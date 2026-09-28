@@ -1,13 +1,24 @@
-import html, re, urllib.parse, urllib.request
+import html, json, pathlib, re, urllib.parse, urllib.request
 
 SPEC = {
     "name": "web_search",
     "description": "上網搜尋，回傳前幾筆結果的標題、網址、摘要。不知道網址時先用這個，找到後再用 fetch_url 讀內文。",
     "parameters": {"type": "object", "properties": {
         "query": {"type": "string", "description": "搜尋關鍵字"},
-        "limit": {"type": "integer", "description": "幾筆，預設 8，最多 15"}},
+        "limit": {"type": "integer", "description": "幾筆，最多 15"}},
         "required": ["query"]},
 }
+
+
+def _cfg(path, default):
+    """讀使用者設定（設定頁存的 config.json）。"""
+    try:
+        cur = json.loads((pathlib.Path(__file__).parent.parent / "config.json").read_text())
+        for k in path.split("."):
+            cur = cur[k]
+        return cur
+    except (OSError, ValueError, KeyError, TypeError):
+        return default
 
 
 def _clean(s):
@@ -20,9 +31,9 @@ def _real_url(href):
     return urllib.parse.parse_qs(q).get("uddg", [html.unescape(href)])[0]
 
 
-def run(query, limit=8):
-    limit = max(1, min(15, int(limit)))
-    data = urllib.parse.urlencode({"q": query, "kl": "tw-tzh"}).encode()
+def run(query, limit=None):
+    limit = max(1, min(15, int(limit or _cfg("search.limit", 8))))
+    data = urllib.parse.urlencode({"q": query, "kl": _cfg("search.region", "tw-tzh")}).encode()
     req = urllib.request.Request("https://html.duckduckgo.com/html/", data=data, headers={
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/126 Safari/537.36"})
     with urllib.request.urlopen(req, timeout=20) as r:

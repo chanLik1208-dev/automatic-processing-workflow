@@ -1,11 +1,11 @@
-import html, re, urllib.request
+import html, json, pathlib, re, urllib.request
 
 SPEC = {
     "name": "fetch_url",
     "description": "抓一個網頁，回傳標題、日期和正文（已去掉選單、頁首頁尾、側欄）。",
     "parameters": {"type": "object", "properties": {
         "url": {"type": "string"},
-        "max_chars": {"type": "integer", "description": "最多回傳幾個字，預設 6000"}},
+        "max_chars": {"type": "integer", "description": "最多回傳幾個字（不填就用設定值）"}},
         "required": ["url"]},
 }
 
@@ -13,6 +13,17 @@ SPEC = {
 DROP = r"script|style|noscript|svg|iframe|form|nav|header|footer|aside|button|select|template"
 BLOCK = r"p|div|li|h[1-6]|tr|section|article|blockquote|pre|figcaption|dd|dt"
 SENTENCE = re.compile(r"[。！？；，、.!?;:：]")
+
+
+def _cfg(path, default):
+    """讀使用者設定（設定頁存的 config.json）。"""
+    try:
+        cur = json.loads((pathlib.Path(__file__).parent.parent / "config.json").read_text())
+        for k in path.split("."):
+            cur = cur[k]
+        return cur
+    except (OSError, ValueError, KeyError, TypeError):
+        return default
 
 
 def _meta(page, *names):
@@ -42,7 +53,8 @@ def _keep(line):
     return len(line) >= 40 or (len(line) >= 12 and SENTENCE.search(line))
 
 
-def run(url, max_chars=6000):
+def run(url, max_chars=None):
+    max_chars = int(max_chars or _cfg("fetch.max_chars", 6000))
     if not url.lower().startswith(("http://", "https://")):
         return "只接受 http:// 或 https:// 網址"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Macintosh) ai-workflow"})

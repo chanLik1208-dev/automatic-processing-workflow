@@ -23,7 +23,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install pyinstaller
+      - run: pip install pyinstaller pywebview
       - run: python build.py
 
       - name: 啟動測試（macOS / Linux）

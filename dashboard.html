@@ -49,6 +49,54 @@ input[type=text], input[type=time], input[type=number], select, textarea {
   font: inherit; font-size: 14px; min-width: 0; }
 textarea { width: 100%; resize: vertical; line-height: 1.6; }
 
+/* ── 分頁（配方 §10：底線是滑過去的） ── */
+.tabs { position: relative; display: flex; gap: 4px; margin: 0 0 16px; border-bottom: 1px solid var(--line); }
+.tabs button { background: none; color: var(--soft); border-radius: 6px 6px 0 0; padding: 8px 14px; font-size: 14.5px; }
+.tabs button:hover:not(:disabled) { transform: none; background: var(--tint); filter: none; }
+.tabs button.on { color: var(--ink); font-weight: 600; }
+.tab-ind { position: absolute; left: 0; bottom: -1px; height: 2px; width: 100px; background: var(--run); transform-origin: left; }
+
+/* ── Skills ── */
+.sk-grid { display: grid; grid-template-columns: 380px 1fr; gap: 20px; align-items: start; }
+@media (max-width: 900px) { .sk-grid { grid-template-columns: 1fr; } }
+.sk { padding: 12px 16px; border-bottom: 1px solid var(--line); cursor: pointer; transition: background-color var(--d-lumin) var(--e-out); }
+.sk:last-child { border-bottom: 0; }
+.sk:hover { background: var(--tint); }
+.sk.sel { background: var(--run-tint); }
+.sk .t { font-weight: 600; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.sk .d { color: var(--soft); font-size: 13px; margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.badge { font-size: 11px; font-weight: 500; padding: 1px 7px; border-radius: 999px; background: var(--tint); color: var(--soft); }
+.badge.k { background: var(--run-tint); color: var(--run); }
+.sk-group { padding: 8px 16px 4px; font-size: 12px; color: var(--muted); letter-spacing: .06em; }
+#sk-panel { padding: 20px 24px; min-height: 320px; }
+#sk-panel h3 { margin: 0 0 4px; font-size: 18px; }
+.row2 { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.row2 input[type=text] { flex: 1; min-width: 200px; }
+.warnbox { background: var(--tint); border-left: 3px solid var(--warn); padding: 10px 14px; border-radius: 6px; margin: 10px 0; font-size: 14px; }
+/* 構建器 */
+.builder { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 1000px) { .builder { grid-template-columns: 1fr; } }
+.chat { display: flex; flex-direction: column; gap: 8px; max-height: 460px; overflow: auto; padding: 4px 2px; }
+.bub { padding: 9px 13px; border-radius: 12px; max-width: 92%; white-space: pre-wrap; word-break: break-word; font-size: 14px; line-height: 1.6; }
+.bub.u { align-self: flex-end; background: var(--run-tint); }
+.bub.a { align-self: flex-start; background: var(--tint); }
+.bub.wait { display: flex; gap: 8px; align-items: center; color: var(--muted); }
+.draft textarea { width: 100%; min-height: 420px; font: 12.5px/1.55 ui-monospace, Menlo, monospace; }
+
+/* ── 設定 ── */
+#st-form { max-width: 860px; }
+.st-sec { padding: 18px 22px; margin-bottom: 16px; }
+.st-sec h3 { margin: 0 0 4px; font-size: 16px; }
+.st-sec > .muted { font-size: 13px; margin-bottom: 8px; }
+.st-sec .row { grid-template-columns: 170px 1fr; margin: 10px 0; }
+.st-sec .row .hint { margin-top: 3px; }
+.st-sec input[type=number] { width: 120px; }
+.prov { border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; margin: 10px 0; }
+.prov-h { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.prov-h b { font-size: 15px; }
+.st-save { position: sticky; bottom: 12px; display: flex; gap: 10px; align-items: center; padding: 12px 16px;
+           background: var(--elev); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+
 /* ── 工具列：下拉選單 + 選中的工作流 ── */
 .bar { display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 20px; flex-wrap: wrap; }
 .dd { position: relative; }
@@ -237,6 +285,8 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
     <div id="install-box"></div>
   </header>
 
+  <nav class="tabs" id="tabs"><button class="on" data-tab="wf">工作流</button><button data-tab="skills">Skills</button><button data-tab="settings">設定</button><span class="tab-ind" id="tab-ind"></span></nav>
+  <div id="view-wf">
   <div class="panel bar" id="bar">
     <div class="dd" id="wf-dd">
       <button class="dd-btn" data-toggle="wf-menu"><span id="dd-label">全部工作流</span><span class="caret">▼</span></button>
@@ -262,6 +312,26 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
       <div class="panel" id="detail"><div class="empty">還沒有執行紀錄</div></div>
     </section>
   </div>
+  </div>
+  <div id="view-skills" hidden>
+    <div class="panel bar">
+      <div class="dd">
+        <button class="dd-btn" data-toggle="import-menu" style="min-width:0">匯入 skill <span class="caret">▼</span></button>
+        <div class="menu" id="import-menu">
+          <span class="plain" data-imp="file">上傳檔案<small>.zip、SKILL.md 或 .py</small></span>
+          <span class="plain" data-imp="github">從 GitHub 網址匯入</span>
+        </div>
+      </div>
+      <button class="ghost" data-sk-builder>用對話建立 skill</button>
+      <div class="info">知識型 skill（SKILL.md）是給模型看的做事方法；工具型 skill（.py）是模型能呼叫的動作。</div>
+      <input type="file" id="sk-file" accept=".zip,.md,.py" hidden>
+    </div>
+    <div class="sk-grid">
+      <section><h2>已安裝的 skill</h2><div class="panel" id="sk-list"></div></section>
+      <section><h2 id="sk-panel-title">內容</h2><div class="panel" id="sk-panel"><div class="empty">選一個 skill，或匯入、用對話建立一個</div></div></section>
+    </div>
+  </div>
+  <div id="view-settings" hidden><form id="st-form" autocomplete="off"></form></div>
 </div>
 
 <dialog id="editor">
@@ -364,9 +434,10 @@ let WF = {}, WFS = [], PROV = {}, SKILLS = [], selWf = null, selRun = null, show
 // ── 白話化 ─────────────────────────────────────────
 const STATUS = {success: ["成功", "ok"], failed: ["失敗", "bad"], running: ["執行中", "run"], interrupted: ["中斷", "warn"],
                 cancelled: ["已停止", "warn"]};
-const PROVIDER = {lmstudio: "本機", deepseek: "DeepSeek", claude: "Claude 訂閱", codex: "ChatGPT 訂閱", gemini: "Gemini"};
+const PROVIDER = {auto: "自動", lmstudio: "本機", deepseek: "DeepSeek", claude: "Claude 訂閱", codex: "ChatGPT 訂閱", gemini: "Gemini"};
 
 function modelName(id, provider) {
+  if (provider === "auto") return "自動模式";
   id = id || PROV[provider]?.default_model || "";
   const m = id.match(/^([a-z]+)([\d.]*)[-_]?(\d+(?:\.\d+)?b)?/i);
   let name = id;
@@ -392,6 +463,7 @@ function when(ts) {
   const dd = Math.round((day - today) / 86400000);
   return (dd === 0 ? "今天 " : dd === -1 ? "昨天 " : dd === 1 ? "明天 " : `${d.getMonth()+1}/${d.getDate()} `) + hm;
 }
+const wfTitle = n => WF[n]?.title || (String(n).startsWith("skill:") ? `試用：${n.slice(6)}` : n);
 const isManual = s => !s || (!s.daily && !s.every_minutes);
 function schedText(s) {
   if (isManual(s)) return "手動執行";
@@ -479,8 +551,26 @@ function md(src) {
 }
 
 // ── API ───────────────────────────────────────────
-const j = async (u, o) => (await fetch(u, o)).json();
-const post = (u, body) => fetch(u, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})})
+// 傳輸層：原生視窗裡直接呼叫 Python（不開 port、不經過網路）；在瀏覽器裡（headless 模式）才用 HTTP
+const NATIVE = () => !!window.pywebview?.api?.request;
+async function apiFetch(url, opts = {}) {
+  if (!NATIVE()) return fetch(url, opts);
+  const r = await window.pywebview.api.request(opts.method || "GET", url, opts.body ? JSON.parse(opts.body) : null);
+  const bin = r.b64 ? Uint8Array.from(atob(r.b64), c => c.charCodeAt(0)) : null;
+  return {ok: r.status < 400, status: r.status,
+          headers: {get: k => (r.headers || {})[k] ?? null},
+          json: async () => r.json ?? JSON.parse(r.text || "null"),
+          blob: async () => new Blob([bin || r.text || ""], {type: r.ctype || ""})};
+}
+const j = async (u, o) => (await apiFetch(u, o)).json();
+// 原生視窗裡點外部連結：交給系統瀏覽器開，視窗本身不能被導到別的網站
+document.addEventListener("click", e => {
+  const a = e.target.closest("a[href]");
+  if (!a || !window.__NATIVE__ || !/^https?:/i.test(a.getAttribute("href"))) return;
+  e.preventDefault(); e.stopPropagation();
+  window.pywebview?.api?.open_url(a.href);
+}, true);
+const post = (u, body) => apiFetch(u, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})})
   .then(async r => ({ok: r.ok, ...(await r.json())}));
 const changed = (k, v) => { const s = JSON.stringify(v); if (lastSig[k] === s) return false; lastSig[k] = s; return true; };
 
@@ -491,8 +581,10 @@ function renderSummary(runs) {
   const ok = t.filter(r => r.status === "success").length, bad = t.filter(r => r.status === "failed").length;
   const next = WFS.filter(w => w.next_due && w.enabled).sort((a, b) => a.next_due - b.next_due)[0];
   const running = WFS.filter(w => w.running);
-  const p = Object.entries(PROV).filter(([n, v]) => !v.missing).map(([n, v]) => v.ok ? `<span class="ok-text">${PROVIDER[n] || n}可用</span>`
-    : `<span class="bad-text">${PROVIDER[n] || n}${/API_KEY/.test(v.error) ? "還沒設定 key" : v.kind === "cli" ? "還不能用" : "連不上"}</span>`).join("、");
+  const quota = n => { const q = USAGE?.cli_limits?.[n]; return q && q.resetsAt * 1000 > Date.now() && q.utilization != null
+    ? `（${{five_hour: "5 小時", seven_day: "7 天"}[q.rateLimitType] || ""}額度 ${Math.round(q.utilization * 100)}%）` : ""; };
+  const p = Object.entries(PROV).filter(([n, v]) => !v.missing).map(([n, v]) => v.ok ? `<span class="${/9\d%|100%/.test(quota(n)) ? "warn-text" : "ok-text"}">${PROVIDER[n] || n}可用${quota(n)}</span>`
+    : `<span class="bad-text">${PROVIDER[n] || n}${/API.?KEY/i.test(v.error || "") ? "還沒設定 key" : v.kind === "cli" ? "還不能用" : "連不上"}</span>`).join("、");
   $("#summary").innerHTML = [
     running.length ? `<b class="run-text">${running.map(w => esc(w.title)).join("、")}正在執行</b>` : "目前沒有工作在跑",
     `今天跑了 <b>${t.length}</b> 次` + (t.length ? `（成功 ${ok}${bad ? `、<span class="bad-text">失敗 ${bad}</span>` : ""}）` : ""),
@@ -559,14 +651,14 @@ function renderRuns(runs) {
   const key = `${selWf}|${showAll}`, fresh = key !== runsKey; runsKey = key;
   const list = runs.filter(r => !selWf || r.workflow === selWf);
   const shown = showAll ? list : list.slice(0, 10);
-  $("#runs-title").textContent = selWf ? `「${WF[selWf]?.title || selWf}」的執行紀錄` : "最近的執行";
+  $("#runs-title").textContent = selWf ? `「${wfTitle(selWf)}」的執行紀錄` : "最近的執行";
   box.innerHTML = shown.map(r => {
     const st = STATUS[r.status];
     const took = r.finished ? dur(r.finished - r.started) : r.status === "running" ? "進行中" : "";
     return `<div class="run ${r.id === selRun ? "sel" : ""}" data-rid="${r.id}">
       <span class="dot" style="background:var(--${st[1]})"></span>
-      <div class="main"><div class="t">${esc(WF[r.workflow]?.title || r.workflow)}</div>
-        <div class="m">${r.trigger === "schedule" ? "排程" : "手動"} · ${esc(modelName(r.model, r.provider))}</div></div>
+      <div class="main"><div class="t">${esc(wfTitle(r.workflow))}</div>
+        <div class="m">${{schedule: "排程", cli: "命令列"}[r.trigger] || "手動"} · ${esc(modelName(r.model, r.provider))}</div></div>
       <div class="r"><span class="${st[1]}-text">${st[0]}</span><br>${when(r.started)}${took ? " · " + took : ""}</div>
     </div>`;
   }).join("") + (list.length > shown.length ? `<div class="more" data-more>再顯示 ${list.length - shown.length} 筆</div>` : "")
@@ -617,7 +709,7 @@ function segLabel(s) {
 }
 // 橫向時間條：每段寬度 = 花的時間；夠寬才寫字，滑過去看完整說明
 function timeBar(steps, live) {
-  const segs = steps.filter(s => s.kind !== "error" || s.ms).map(s => ({
+  const segs = steps.filter(s => s.kind === "llm" || s.kind === "tool" || (s.kind === "error" && s.ms)).map(s => ({
     cls: s.kind === "llm" ? "model" : s.kind === "tool" ? (resultSummary(s.name, s.output).err ? "error" : "tool") : "error",
     sec: Math.max((s.ms || 0) / 1000, 0.05), label: segLabel(s),
     tip: s.kind === "tool" ? describe(s.name, s.input).filter(Boolean).join("：") : segLabel(s)}));
@@ -631,6 +723,7 @@ function timeBar(steps, live) {
       <span><i style="background:var(--c-tool)"></i>使用工具：${dur(tool) || "不到 1 秒"}（${Math.round(tool / total * 100)}%）</span></div>`;
 }
 function actRow(s, withRaw) {
+  if (s.kind === "note") return `<div class="act-row"><span class="ic" style="color:var(--run)">ℹ</span><span>${esc(s.output)}</span><span></span></div>`;
   if (s.kind === "tool") {
     const [v, o] = describe(s.name, s.input), r = resultSummary(s.name, s.output);
     return `<div class="act-row"><span class="ic ${r.err ? "bad" : "ok"}">${r.err ? "✕" : "✓"}</span>
@@ -712,7 +805,7 @@ function renderDetail(d) {
   const r = d.run, st = STATUS[r.status];
   const took = r.finished ? `，花了 ${dur(r.finished - r.started)}` : "";
   $("#detail").innerHTML = `
-    <div class="dhead"><p class="t">${esc(WF[r.workflow]?.title || r.workflow)} <span class="${st[1]}-text" style="font-size:15px">${st[0]}</span></p>
+    <div class="dhead"><p class="t">${esc(wfTitle(r.workflow))} <span class="${st[1]}-text" style="font-size:15px">${st[0]}</span></p>
       ${r.status === "running" ? "" : `<div class="dd"><button class="ghost" data-toggle="export-menu">匯出 ▾</button>
         <div class="menu right" id="export-menu" style="min-width:230px">
           <span class="plain" data-export="docx">Word<small>.docx</small></span>
@@ -740,7 +833,7 @@ function renderDetail(d) {
 // ── 匯出 ───────────────────────────────────────────
 let exportSteps = false, DETAIL = null;
 function exportDoc(d, withSteps) {
-  const r = d.run, title = WF[r.workflow]?.title || r.workflow, st = STATUS[r.status][0];
+  const r = d.run, title = wfTitle(r.workflow), st = STATUS[r.status][0];
   const started = new Date(r.started * 1000);
   const stamp = started.toLocaleString("zh-TW", {year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false});
   const meta = `${stamp} ${r.trigger === "schedule" ? "排程" : "手動"}執行 · ${st}` +
@@ -778,7 +871,13 @@ function toast(msg, ms = 2500) {
   if (ms) setTimeout(t.leave, ms);
   return t;
 }
-function save(blob, name) {
+async function save(blob, name) {
+  if (NATIVE()) {                                   // 原生視窗沒有下載列：用系統的「儲存」對話框
+    const b64 = await new Promise(ok => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.readAsDataURL(blob); });
+    const where = await window.pywebview.api.save_file(name, b64);
+    if (where) toast(`已存到 ${where}`);
+    return;
+  }
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
@@ -792,7 +891,7 @@ async function doExport(fmt) {
   }
   const t = toast(fmt === "pdf" ? "正在產生 PDF…" : "正在產生 Word 檔…", 0);
   try {
-    const r = await fetch("/api/export", {method: "POST", headers: {"Content-Type": "application/json"},
+    const r = await apiFetch("/api/export", {method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({format: fmt, html: x.html, filename: `${x.fname}.${fmt}`})});
     if (!r.ok) throw new Error((await r.json()).error);
     save(await r.blob(), `${x.fname}.${r.headers.get("X-Export-Ext") || fmt}`);
@@ -840,11 +939,11 @@ async function loadLive() {
     const max = WF[L.workflow]?.max_steps || 12, pct = Math.min(100, L.round / max * 100);
     const idle = L.phase === "waiting" ? 0 : Date.now() / 1000 - (L.last_token || L.since || L.started);
     const written = (L.content || "").length + (L.reasoning || "").length;
-    const stuck = L.broken ? `<div class="errbox" style="margin-top:10px">${esc(L.broken)}</div>` : idle > 45
+    const stuck = L.broken ? `<div class="errbox" style="margin-top:10px">${esc(L.broken)}</div>` : idle > (SETTINGS?.limits?.stall_seconds || 45)
       ? `<div class="errbox" style="margin-top:10px">已經 ${dur(idle)} 沒有新的輸出${written ? `（目前只寫了 ${written} 字）` : ""}，模型可能卡住了。
-         可以按右上角的「停止」；就算不管它，單輪最多也只會寫 ${WF[L.workflow]?.max_tokens || 4096} tokens。</div>` : "";
+         可以按右上角的「停止」；就算不管它，單輪最多也只會寫 ${WF[L.workflow]?.max_tokens || SETTINGS?.limits?.max_tokens || 4096} tokens。</div>` : "";
     // 最近的動作：連續相同的合併成一行
-    const acts = steps.filter(s => s.kind !== "llm"), groups = [];
+    const acts = steps.filter(s => s.kind !== "llm" && s.kind !== "note"), groups = [];
     for (const s of acts) {
       const key = s.kind === "tool" ? s.name + (resultSummary(s.name, s.output).err ? "!" : "") : "err";
       const g = groups[groups.length - 1];
@@ -888,6 +987,7 @@ async function loadLive() {
 // ── 編輯表單 ───────────────────────────────────────
 const F = () => $("#ed-form").elements;
 function fillModels(provider, current) {
+  if (provider === "auto") { F().model.innerHTML = `<option value="">由自動模式決定（設定 → 自動模式）</option>`; return; }
   const models = (PROV[provider]?.models || []).filter(m => !/embed/i.test(m));
   if (current && !models.includes(current)) models.unshift(current);
   const def = PROV[provider]?.default_model;
@@ -895,8 +995,11 @@ function fillModels(provider, current) {
     models.map(m => `<option value="${esc(m)}" ${m === current ? "selected" : ""}>${esc(m)}</option>`).join("");
 }
 function fillFallback(provider, current) {
+  if (provider === "auto") { F().fallback.innerHTML = `<option value="">不需要：自動模式會照順序換</option>`; return; }
+  // 不能用的來源（沒安裝、還沒支援、連不上）不能選成備援；但已經存的值照樣顯示，免得被悄悄改掉
   F().fallback.innerHTML = `<option value="">直接失敗</option>` + Object.keys(PROV).filter(p => p !== provider)
-    .map(p => `<option value="${p}" ${p === current ? "selected" : ""}>改用 ${PROVIDER[p] || p}</option>`).join("");
+    .map(p => { const ok = PROV[p].ok || /API.?KEY/i.test(PROV[p].error || "");
+      return `<option value="${p}" ${p === current ? "selected" : ""} ${ok || p === current ? "" : "disabled"}>改用 ${esc(PROV[p].label || PROVIDER[p] || p)}${ok ? "" : "（不能用）"}</option>`; }).join("");
 }
 function syncSched() {
   const k = F().sched_kind.value;
@@ -904,34 +1007,37 @@ function syncSched() {
   $("#ed-every").style.display = k === "every" ? "" : "none";
   $("#ed-enabled").style.display = k === "manual" ? "none" : "";
 }
-function openEditor(w) {
+function openEditor(w, pre) {
   editing = w ? w.name : null;
+  const v = w || pre || null;                      // pre：從 skill 建立工作流時預先填好的內容
   const f = F();
-  $("#ed-title").textContent = w ? `編輯「${w.title}」` : "新增工作流";
+  $("#ed-title").textContent = w ? `編輯「${w.title}」` : pre ? "用這個 skill 建立工作流" : "新增工作流";
   $("#ed-name-row").style.display = w ? "none" : "";
   $("#ed-err").textContent = "";
-  f.title.value = w?.title || ""; f.name.value = ""; f.description.value = w?.description || "";
-  const s = w?.schedule || {};
+  f.title.value = v?.title || ""; f.name.value = pre?.name || ""; f.description.value = v?.description || "";
+  const s = v?.schedule || {};
   f.sched_kind.value = s.daily ? "daily" : s.every_minutes ? "every" : "manual";
   f.daily.value = s.daily || "08:00";
   const ev = String(s.every_minutes || 60);
   if (![...f.every.options].some(o => o.value === ev)) f.every.insertAdjacentHTML("beforeend", `<option value="${ev}">${ev} 分鐘</option>`);
   f.every.value = ev;
   f.enabled.checked = w ? w.enabled : true;
-  f.provider.innerHTML = Object.entries(PROV).map(([p, v]) =>
-    `<option value="${p}" ${v.ok || v.error?.includes("API_KEY") || p === w?.provider ? "" : "disabled"}>${PROVIDER[p] || p}${v.missing ? "（未安裝）" : !v.ok && v.kind === "cli" ? "（尚未支援）" : ""}</option>`).join("");
-  f.provider.value = w?.provider || "lmstudio";
-  fillModels(f.provider.value, w?.model || "");
-  fillFallback(f.provider.value, w ? w.fallback : Object.keys(PROV).find(p => p !== f.provider.value));
-  const have = new Set(w?.skills || []);
-  $("#ed-skills").innerHTML = SKILLS.map(sp => `<label><input type="checkbox" value="${esc(sp.name)}" ${have.has(sp.name) ? "checked" : ""}>
-    ${esc(describe(sp.name, {})[0])} <small>${esc(sp.name)}</small></label>`).join("");
-  f.task.value = w?.task || ""; f.system.value = w?.system || "你是自動執行任務的 agent，一律用繁體中文（台灣）。";
-  f.max_steps.value = w?.max_steps || 12;
+  f.provider.innerHTML = `<option value="auto">自動（依優先順序和用量挑）</option>` + Object.entries(PROV).map(([p, x]) =>
+    `<option value="${p}" ${x.ok || /API.?KEY/i.test(x.error || "") || p === v?.provider ? "" : "disabled"}>${PROVIDER[p] || p}${x.missing ? "（未安裝）" : !x.ok && x.kind === "cli" ? "（尚未支援）" : ""}</option>`).join("");
+  f.provider.value = v?.provider || firstProvider();
+  fillModels(f.provider.value, v?.model || "");
+  fillFallback(f.provider.value, w ? w.fallback : Object.keys(PROV).find(p => p !== f.provider.value && PROV[p].ok) || "");
+  const have = new Set(v?.skills || []);
+  // 工作流勾的是「工具」；知識型 skill 透過「載入知識 / 翻閱章節」使用
+  $("#ed-skills").innerHTML = SKILLS.filter(sp => sp.kind === "tool").map(sp => `<label title="${esc(sp.description)}"><input type="checkbox" value="${esc(sp.name)}" ${have.has(sp.name) ? "checked" : ""}>
+    ${esc(SKILL_TEXT[sp.name] ? describe(sp.name, {})[0] : sp.description.slice(0, 14) || sp.name)} <small>${esc(sp.name)}</small></label>`).join("");
+  f.task.value = v?.task || ""; f.system.value = v?.system || "你是自動執行任務的 agent，一律用繁體中文（台灣）。";
+  f.max_steps.value = v?.max_steps || 12;
   syncSched();
   openEditor2();
-  (w ? f.title : f.title).focus();
+  f.title.focus();
 }
+function firstProvider() { return ["claude", "lmstudio", "deepseek"].find(p => PROV[p]?.ok) || "lmstudio"; }
 $("#ed-form").addEventListener("change", e => {
   if (e.target.name === "sched_kind") syncSched();
   if (e.target.name === "provider") { fillModels(e.target.value, ""); fillFallback(e.target.value, F().fallback.value); }
@@ -1062,6 +1168,420 @@ document.addEventListener("change", async e => {
 });
 function alertBar(msg) { $("#wf-info").innerHTML = `<span class="bad-text">${esc(msg || "發生錯誤")}</span>`; }
 
+// ── 分頁 ───────────────────────────────────────────
+let tab = "wf";
+function placeTabInd(jump) {
+  const b = document.querySelector(`#tabs [data-tab="${tab}"]`), ind = $("#tab-ind");
+  const x = b.offsetLeft, w = b.offsetWidth;
+  const to = `translateX(${x}px) scaleX(${w / 100})`;
+  if (jump || reduced.matches) { ind.style.transform = to; return; }
+  anim(ind, {transform: [to]}, S.layout, "move");          // 底線用 transform 滑過去，不動 width（B1）
+}
+const VIEWS = {wf: "#view-wf", skills: "#view-skills", settings: "#view-settings"};
+async function switchTab(t) {
+  if (t === tab) return;
+  const from = $(VIEWS[tab]), to = $(VIEWS[t]);
+  tab = t;
+  document.querySelectorAll("#tabs [data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
+  placeTabInd();
+  closeMenus();
+  // 先離場再進場（配方 §23）
+  fade(from, {opacity: [0]}, T.exit); move(from, {transform: ["translateY(-6px)"]}, T.exit);
+  await new Promise(r => setTimeout(r, 150));
+  if (tab !== t) return;
+  from.hidden = true; to.hidden = false;
+  fade(to, {opacity: [0, 1]}, T.fade); move(to, {transform: ["translateY(8px)", "none"]}, S.page);
+  if (t === "skills") loadSkills(true);
+  if (t === "settings") loadSettings();
+}
+
+// ── 設定 ───────────────────────────────────────────
+let SETTINGS = null, USAGE = null;
+const BUILTIN_PROVIDERS = ["lmstudio", "deepseek", "claude", "codex", "gemini"];
+const num = (label, path, hint, unit = "") => `<div class="row"><label>${label}</label><div>
+  <input type="number" data-st="${path}" value="${esc(getPath(SETTINGS, path))}"> <span class="muted">${unit}</span>
+  ${hint ? `<div class="hint">${hint}</div>` : ""}</div></div>`;
+const txt = (label, path, hint, ph = "") => `<div class="row"><label>${label}</label><div>
+  <input type="text" class="full" data-st="${path}" value="${esc(getPath(SETTINGS, path))}" placeholder="${esc(ph)}">
+  ${hint ? `<div class="hint">${hint}</div>` : ""}</div></div>`;
+const sw = (label, path, hint) => `<div class="row"><label>${label}</label><div>
+  <label class="switch"><input type="checkbox" data-st="${path}" data-bool ${getPath(SETTINGS, path) ? "checked" : ""}><span class="tr"></span></label>
+  ${hint ? `<div class="hint">${hint}</div>` : ""}</div></div>`;
+function getPath(o, p) { return p.split(".").reduce((a, k) => a?.[k], o) ?? ""; }
+
+function provCard(name, p) {
+  const st = PROV[name], cli = p.type === "cli";
+  const status = !p.enabled ? `<span class="muted">已停用</span>` : st?.ok ? `<span class="ok-text">可用</span>`
+    : `<span class="bad-text">${esc(st?.error || "檢查中")}</span>`;
+  const models = [...new Set([p.default_model, ...(st?.models || [])].filter(Boolean))].filter(m => !/embed/i.test(m));
+  return `<div class="prov" data-prov="${esc(name)}">
+    <div class="prov-h"><div><b>${esc(p.label || name)}</b> <span class="muted" style="font-size:12px">${esc(name)} · ${cli ? "訂閱 CLI" : "OpenAI 相容 API"}</span> · ${status}</div>
+      <div style="display:flex;gap:8px;align-items:center"><label class="switch"><input type="checkbox" data-pf="enabled" ${p.enabled !== false ? "checked" : ""}><span class="tr"></span>啟用</label>
+      ${BUILTIN_PROVIDERS.includes(name) ? "" : `<button type="button" class="ghost" data-prov-del="${esc(name)}" style="color:var(--bad)">移除</button>`}</div></div>
+    <div class="row"><label>顯示名稱</label><input type="text" class="full" data-pf="label" value="${esc(p.label || "")}"></div>
+    ${cli ? `<div class="row"><label>執行檔路徑</label><div><input type="text" class="full" data-pf="path" value="${esc(p.path || "")}" placeholder="留空：自動在 PATH 裡找 ${esc(p.command)}">
+        ${st?.missing ? `<div class="hint">還沒安裝：<code>${esc((st.install || [])[0] || "")}</code>，${esc(st.login || "")}</div>` : ""}</div></div>`
+      : `<div class="row"><label>API 網址</label><input type="text" class="full" data-pf="base_url" value="${esc(p.base_url || "")}" placeholder="https://…/v1"></div>
+        <div class="row"><label>API key</label><div>
+          <label style="display:flex;gap:6px;align-items:center;font-size:13.5px"><input type="checkbox" data-pf="needs_key" ${p.needs_key ? "checked" : ""}>這個服務需要 API key</label>
+          <div class="row2" style="margin-top:6px"><input type="password" class="full" data-pf="new_key" placeholder="${p.key_from_env ? "目前使用環境變數裡的 key" : p.key_hint || "還沒設定"}；要換就在這裡貼上新的">
+            ${p.key_hint ? `<button type="button" class="ghost" data-key-clear>清除 key</button>` : ""}</div>
+          <div class="hint">key 只存在這台電腦的設定檔（只有你的帳號能讀），不會再顯示出來。</div></div></div>`}
+    <div class="row"><label>預設模型</label><div><input type="text" class="full" data-pf="default_model" list="ml-${esc(name)}" value="${esc(p.default_model || "")}"
+        placeholder="${name === "lmstudio" ? "留空：用 LM Studio 當下載入的模型" : cli ? "留空：用 CLI 自己的預設" : ""}">
+      <datalist id="ml-${esc(name)}">${models.map(m => `<option value="${esc(m)}">`).join("")}</datalist></div></div>
+  </div>`;
+}
+
+function autoRow(it) {
+  const names = Object.keys(SETTINGS.providers);
+  const u = USAGE?.today?.[it.provider] || {runs: 0, tokens: 0};
+  const q = USAGE?.cli_limits?.[it.provider];
+  const qt = q && q.resetsAt * 1000 > Date.now() && q.utilization != null
+    ? ` · 訂閱額度 ${Math.round(q.utilization * 100)}%（${new Date(q.resetsAt * 1000).toLocaleTimeString("zh-TW", {hour: "2-digit", minute: "2-digit", hour12: false})} 重置）` : "";
+  return `<div class="prov auto-row">
+    <div class="prov-h"><div class="row2" style="margin:0">
+      <button type="button" class="ghost" data-auto-up title="往上">↑</button><button type="button" class="ghost" data-auto-down title="往下">↓</button>
+      <select data-af="provider">${names.map(n => `<option value="${n}" ${n === it.provider ? "selected" : ""}>${esc(SETTINGS.providers[n].label || n)}</option>`).join("")}</select>
+      <input type="text" data-af="model" value="${esc(it.model || "")}" placeholder="模型（留空用預設）" style="width:190px"></div>
+      <button type="button" class="ghost" data-auto-del style="color:var(--bad)">移除</button></div>
+    <div class="row2"><span class="muted" style="font-size:13px">每天最多</span>
+      <input type="number" data-af="max_daily_tokens" value="${it.max_daily_tokens || 0}" style="width:120px"><span class="muted" style="font-size:13px">tokens、</span>
+      <input type="number" data-af="max_daily_runs" value="${it.max_daily_runs || 0}" style="width:80px"><span class="muted" style="font-size:13px">次（0 = 不限）</span></div>
+    <div class="hint" style="margin-top:6px">今天用了 ${u.tokens.toLocaleString()} tokens、${u.runs} 次${qt}</div></div>`;
+}
+async function loadSettings() {
+  [SETTINGS, PROV, USAGE] = await Promise.all([j("/api/settings"), j("/api/providers"), j("/api/usage")]);
+  const s = SETTINGS;
+  $("#st-form").innerHTML = `
+    <div class="panel st-sec"><h3>模型來源</h3><div class="muted">工作流和構建器可以用的模型。停用的不會出現在選單裡。</div>
+      <div id="prov-list">${Object.entries(s.providers).map(([n, p]) => provCard(n, p)).join("")}</div>
+      <button type="button" class="ghost" data-prov-add>＋ 新增 OpenAI 相容的服務（OpenRouter、Ollama、自架伺服器…）</button></div>
+    <div class="panel st-sec"><h3>自動模式</h3><div class="muted">工作流的模型選「自動」時，照這個順序挑第一個「可用、而且沒超過用量上限」的來源；跑到一半出錯就換下一個。</div>
+      <div id="auto-list">${(s.auto?.order || []).map(autoRow).join("")}</div>
+      <button type="button" class="ghost" data-auto-add>＋ 加一個來源</button>
+      <div class="row" style="margin-top:14px"><label>訂閱額度門檻</label><div>
+        <input type="number" id="auto-thr" value="${Math.round((s.auto?.cli_max_utilization ?? 0.9) * 100)}" min="10" max="100" style="width:90px"> <span class="muted">%</span>
+        <div class="hint">訂閱 CLI（例如 Claude）回報的額度使用率超過這個比例，自動模式就先跳過它，等重置後再用。</div></div></div></div>
+    <div class="panel st-sec"><h3>本地備用</h3><div class="muted">跟上面的自動模式、每條工作流自己的備援都分開。打開後，只要其他模型全部失敗、超額或連不上，最後一律改用這個本地模型把事情做完，不會整個失敗。</div>
+      <div class="row"><label>啟用本地備用</label><div><label class="switch"><input type="checkbox" id="lf-on" ${s.local_fallback?.enabled ? "checked" : ""}><span class="tr"></span></label></div></div>
+      <div class="row"><label>用哪個來源</label><div><select id="lf-p">${Object.entries(s.providers).map(([n, p]) =>
+          `<option value="${n}" ${n === (s.local_fallback?.provider || "lmstudio") ? "selected" : ""}>${esc(p.label || n)}</option>`).join("")}</select>
+        <span id="lf-status" style="font-size:13px;margin-left:8px">${(() => { const st = PROV[s.local_fallback?.provider || "lmstudio"];
+          return st?.ok ? `<span class="ok-text">現在可用</span>` : `<span class="bad-text">現在不能用${st?.error ? "：" + esc(st.error) : ""}</span>`; })()}</span>
+        <div class="hint">建議選 LM Studio 這類在自己電腦上跑的，網路斷了或雲端額度用完也能用。</div></div></div>
+      <div class="row"><label>模型</label><input type="text" class="full" id="lf-m" value="${esc(s.local_fallback?.model || "")}" placeholder="留空：用那個來源的預設（LM Studio 會用當下載入的模型）"></div></div>
+    <div class="panel st-sec"><h3>一般</h3>
+      ${txt("回覆語言", "language", "會加在每個工作流的系統提示最後。", "繁體中文（台灣）")}
+      ${num("監控頁 port", "server.port", "改了要重新啟動程式才會生效。")}
+      ${num("排程檢查間隔", "tick_seconds", "多久檢查一次有沒有工作流該跑了。", "秒")}</div>
+    <div class="panel st-sec"><h3>執行限制</h3><div class="muted">防止模型鬼打牆、卡住或跑太久。</div>
+      ${num("單輪最多輸出", "limits.max_tokens", "每一輪模型最多寫多少 token；工作流可以另外指定。", "tokens")}
+      ${num("最多幾輪", "limits.max_steps", "新工作流的預設值，超過就算失敗。", "輪")}
+      ${num("連續失敗幾次叫它停", "limits.fail_streak", "工具連續失敗到這個次數，會要求模型停止重試、直接回報。", "次")}
+      ${num("API 逾時", "limits.request_timeout", "", "秒")}
+      ${num("訂閱 CLI 逾時", "limits.cli_timeout", "", "秒")}
+      ${num("卡住提示", "limits.stall_seconds", "超過這麼久沒有新輸出，「現在」區會提示可能卡住了。", "秒")}</div>
+    <div class="panel st-sec"><h3>LM Studio 防護</h3>
+      ${sw("NaN 崩潰偵測", "lmstudio_guard.nan_watchdog", "盯著 LM Studio 的 log；模型數值崩潰時自動中止並卸載模型。")}
+      ${sw("記錄原始輸出", "lmstudio_guard.raw_capture", "每輪保存模型寫的原文，和實際收到的內容對照。")}</div>
+    <div class="panel st-sec"><h3>搜尋與網頁</h3>
+      ${txt("搜尋地區", "search.region", "DuckDuckGo 的地區代碼，例如 tw-tzh、hk-tzh、us-en。")}
+      ${num("搜尋筆數", "search.limit", "", "筆")}
+      ${num("網頁最多讀幾字", "fetch.max_chars", "越多模型讀得越完整，但也越慢、越吃記憶體。", "字")}</div>
+    <div class="panel st-sec"><h3>通知與匯出</h3>
+      ${sw("桌面通知", "notify.enabled", "關掉後，工作流的「跳通知」會直接略過。")}
+      ${txt("PDF 用的瀏覽器", "export.browser_path", "留空會自動找 Chrome / Edge / Chromium。", "例如 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome")}</div>
+    <div class="panel st-sec"><h3>讀檔白名單</h3><div class="muted">「讀取檔案」只能讀這些路徑。一行一個；<code>*</code> 不跨資料夾、<code>**</code> 會往下找；<code>{data}</code> 是這個程式的資料夾。</div>
+      <textarea id="st-paths" rows="4" style="width:100%;font:13px ui-monospace,Menlo,monospace">${esc((s.readable_paths || []).join("\n"))}</textarea></div>
+    <div class="st-save"><button type="submit" id="st-save">儲存設定</button><span id="st-msg" class="muted"></span></div>`;
+  [...document.querySelectorAll("#st-form .st-sec")].forEach((el, i) => enterEl(el, 40 + i * 40));
+}
+
+function collectSettings() {
+  const out = {providers: {}};
+  document.querySelectorAll("#st-form [data-st]").forEach(el => {
+    const v = el.dataset.bool !== undefined ? el.checked : el.type === "number" ? Number(el.value) : el.value;
+    el.dataset.st.split(".").reduce((o, k, i, a) => i === a.length - 1 ? (o[k] = v) : (o[k] ??= {}), out);
+  });
+  document.querySelectorAll("#prov-list [data-prov]").forEach(card => {
+    const n = card.dataset.prov, p = {...(SETTINGS.providers[n] || {})};
+    card.querySelectorAll("[data-pf]").forEach(el => { p[el.dataset.pf] = el.type === "checkbox" ? el.checked : el.value; });
+    if (card.dataset.clearKey) p.clear_key = true;
+    out.providers[n] = p;
+  });
+  out.readable_paths = $("#st-paths").value.split("\n");
+  out.local_fallback = {enabled: $("#lf-on").checked, provider: $("#lf-p").value, model: $("#lf-m").value};
+  out.auto = {cli_max_utilization: Number($("#auto-thr").value) / 100,
+    order: [...document.querySelectorAll("#auto-list .auto-row")].map(r => Object.fromEntries(
+      [...r.querySelectorAll("[data-af]")].map(el => [el.dataset.af, el.type === "number" ? Number(el.value) : el.value])))};
+  return out;
+}
+
+$("#st-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const btn = $("#st-save"), msg = $("#st-msg");
+  btn.disabled = true; msg.textContent = "儲存中…";
+  const oldPort = SETTINGS.server.port;
+  const r = await post("/api/settings", collectSettings());
+  btn.disabled = false;
+  if (!r.ok) { msg.innerHTML = `<span class="bad-text">${esc(r.error)}</span>`; return; }
+  await loadSettings();
+  PROV = await j("/api/providers");
+  $("#st-msg").innerHTML = r.settings.server.port !== oldPort
+    ? `<span class="ok-text">已儲存</span>。port 改成 ${r.settings.server.port}，重新啟動程式後生效。` : `<span class="ok-text">已儲存</span>`;
+  fade($("#st-msg"), {opacity: [0, 1]}, T.lumin);
+  lastSig = {}; tick();
+});
+document.addEventListener("click", e => {
+  if (e.target.closest("[data-prov-add]")) {
+    let i = 1; while (SETTINGS.providers["custom" + i]) i++;
+    const n = "custom" + i;
+    SETTINGS.providers[n] = {label: "新的模型來源", base_url: "", needs_key: true, default_model: "", enabled: true};
+    const div = document.createElement("div"); div.innerHTML = provCard(n, SETTINGS.providers[n]);
+    const card = div.firstElementChild; $("#prov-list").appendChild(card); enterEl(card);
+    card.querySelector('[data-pf="label"]').focus();
+    return;
+  }
+  const del = e.target.closest("[data-prov-del]");
+  if (del) {
+    const card = del.closest("[data-prov]");
+    delete SETTINGS.providers[del.dataset.provDel];
+    fade(card, {opacity: [0]}, T.exit); move(card, {transform: ["translateY(4px)"]}, T.exit);
+    setTimeout(() => card.remove(), 160);
+    $("#st-msg").textContent = "記得按「儲存設定」";
+    return;
+  }
+  const row = e.target.closest(".auto-row");
+  if (e.target.closest("[data-auto-up]") && row.previousElementSibling) {
+    const prev = row.previousElementSibling, dy = prev.offsetTop - row.offsetTop;
+    row.parentNode.insertBefore(row, prev);                       // 換位置後用 FLIP 滑過去，不是瞬移
+    move(row, {transform: [`translateY(${-dy}px)`, "none"]}, S.layout); move(prev, {transform: [`translateY(${dy}px)`, "none"]}, S.layout);
+    return;
+  }
+  if (e.target.closest("[data-auto-down]") && row.nextElementSibling) {
+    const next = row.nextElementSibling, dy = next.offsetTop - row.offsetTop;
+    row.parentNode.insertBefore(next, row);
+    move(row, {transform: [`translateY(${-dy}px)`, "none"]}, S.layout); move(next, {transform: [`translateY(${dy}px)`, "none"]}, S.layout);
+    return;
+  }
+  if (e.target.closest("[data-auto-del]")) { fade(row, {opacity: [0]}, T.exit); setTimeout(() => row.remove(), 160); return; }
+  if (e.target.closest("[data-auto-add]")) {
+    const used = new Set([...document.querySelectorAll('#auto-list [data-af="provider"]')].map(s => s.value));
+    const n = Object.keys(SETTINGS.providers).find(k => !used.has(k)) || Object.keys(SETTINGS.providers)[0];
+    const div = document.createElement("div"); div.innerHTML = autoRow({provider: n}); const r2 = div.firstElementChild;
+    $("#auto-list").appendChild(r2); enterEl(r2); return;
+  }
+  const ck = e.target.closest("[data-key-clear]");
+  if (ck) { const card = ck.closest("[data-prov]"); card.dataset.clearKey = "1"; ck.textContent = "儲存後清除"; ck.disabled = true; }
+});
+
+// ── Skills ─────────────────────────────────────────
+let skMode = null, skSel = null, builderMsgs = [], builderDraft = "", builderBusy = false, pendingPy = null;
+try { const s = JSON.parse(localStorage.getItem("wf-builder") || "null"); if (s) { builderMsgs = s.m || []; builderDraft = s.d || ""; } } catch {}
+const saveBuilder = () => { try { localStorage.setItem("wf-builder", JSON.stringify({m: builderMsgs, d: builderDraft})); } catch {} };
+
+async function loadSkills(animate) {
+  SKILLS = await j("/api/skills");
+  const groups = [["knowledge", "知識型（SKILL.md）"], ["tool", "工具型"]];
+  const src = {builtin: "內建", imported: "匯入", linked: "連結"};
+  $("#sk-list").innerHTML = groups.map(([k, label]) => {
+    const items = SKILLS.filter(s => s.kind === k);
+    return `<div class="sk-group">${label} · ${items.length}</div>` + items.map(s => `
+      <div class="sk ${skSel === s.name ? "sel" : ""}" data-sk="${esc(s.name)}">
+        <div class="t">${esc(s.title || s.name)} <span class="badge ${k === "knowledge" ? "k" : ""}">${k === "knowledge" ? "知識" : "工具"}</span>
+          <span class="badge">${src[s.source] || s.source}</span></div>
+        <div class="d">${esc(s.description || "（沒有說明）")}</div></div>`).join("");
+  }).join("");
+  if (animate) [...$("#sk-list").querySelectorAll(".sk")].slice(0, 12).forEach((el, i) => enterEl(el, 40 + i * 40));
+}
+
+async function showPanel(mode, html, title) {
+  const p = $("#sk-panel");
+  if (skMode !== null && skMode !== mode) {
+    fade(p, {opacity: [0]}, T.exit); await new Promise(r => setTimeout(r, 130));
+  }
+  const changed = skMode !== mode;
+  skMode = mode; $("#sk-panel-title").textContent = title; p.innerHTML = html;
+  if (changed) { fade(p, {opacity: [0, 1]}, T.fade); move(p, {transform: ["translateY(8px)", "none"]}, S.enter); }
+}
+
+function providerOptions() {
+  return Object.entries(PROV).filter(([p, v]) => v.ok).map(([p, v]) => `<option value="${p}">${esc(v.label || PROVIDER[p] || p)}</option>`).join("")
+    || `<option value="">沒有可用的模型來源</option>`;
+}
+
+function showSkill(name) {
+  const s = SKILLS.find(x => x.name === name); if (!s) return;
+  skSel = name;
+  document.querySelectorAll("#sk-list .sk").forEach(el => el.classList.toggle("sel", el.dataset.sk === name));
+  const canDel = s.source !== "builtin";
+  showPanel("detail:" + name, `
+    <h3>${esc(s.title || s.name)}</h3>
+    <div class="muted" style="font-size:13px">${s.kind === "knowledge" ? `知識型 skill · 資料夾 skills/${esc(s.name)} · ${s.files} 個檔案` : `工具型 skill · skills/${esc(s.name)}.py`}</div>
+    <p style="margin:12px 0">${esc(s.description || "（沒有說明）")}</p>
+    <div class="section">試用</div>
+    <div class="muted" style="font-size:13px">${s.kind === "knowledge" ? "模型會先載入這個 skill，照它寫的方法處理你的要求（可以上網搜尋、讀網頁、存報告）。" : "模型會用這個工具處理你的要求。"}</div>
+    <div class="row2"><input type="text" id="sk-try-in" placeholder="要它做什麼？">
+      <select id="sk-try-p">${providerOptions()}</select><button data-sk-try="${esc(name)}">執行</button></div>
+    <div class="section">其他</div>
+    <div class="row2"><button class="ghost" data-sk-wf="${esc(name)}">做成工作流</button>
+      ${canDel ? `<button class="ghost" data-sk-del="${esc(name)}" style="color:var(--bad)">${s.source === "linked" ? "移除連結" : "刪除"}</button>` : `<span class="muted" style="font-size:13px">內建的 skill 不能刪</span>`}</div>`,
+    "內容");
+  const sel = $("#sk-try-p"); if (sel && PROV.claude?.ok) sel.value = "claude";
+}
+
+function showGithub(msg) {
+  showPanel("github", `
+    <h3>從 GitHub 匯入</h3>
+    <p class="muted" style="font-size:13.5px">貼上含有 SKILL.md 的 repo 網址。整個 repo 裡有好幾個 skill 會一起匯入；只要其中一個，就貼到那個資料夾的網址（…/tree/main/路徑）。</p>
+    <div class="row2"><input type="text" id="gh-url" placeholder="https://github.com/owner/repo"><button data-gh-go>匯入</button></div>
+    <div id="gh-msg" style="margin-top:10px">${msg || ""}</div>`, "匯入");
+  setTimeout(() => $("#gh-url")?.focus(), 50);
+}
+
+function showPyConfirm(file) {
+  pendingPy = file;
+  showPanel("py", `
+    <h3>匯入工具：${esc(file.name)}</h3>
+    <div class="warnbox">這是一段 Python 程式。匯入後，模型呼叫它時會<b>以你的帳號權限在這台電腦上執行</b>，可以讀寫檔案、連網路。
+      只匯入你自己寫的、或你看過內容並信任的檔案。</div>
+    <label style="display:flex;gap:8px;align-items:center;font-size:14px"><input type="checkbox" id="py-ok">我了解，這段程式可以在我的電腦上執行</label>
+    <div class="row2"><button data-py-go disabled>匯入</button><button class="ghost" data-py-cancel>取消</button></div>
+    <div id="py-msg" style="margin-top:10px"></div>`, "匯入");
+}
+
+async function doImport(body, msgEl) {
+  const el = () => $(msgEl);
+  el().innerHTML = `<span class="muted">匯入中…</span>`;
+  const r = await post("/api/skills/import", body);
+  if (!r.ok) { el().innerHTML = `<span class="bad-text">${esc(r.error)}</span>`; return; }
+  await loadSkills(false);
+  toast(`已匯入：${r.imported.join("、")}`);
+  showSkill(r.imported[0]);
+}
+
+// 構建器
+function builderHtml() {
+  return `<div class="builder">
+    <div>
+      <div class="chat" id="b-chat">${builderMsgs.length ? builderMsgs.map(m => `<div class="bub ${m.role === "user" ? "u" : "a"}">${esc(m.role === "user" ? m.content : m.content.replace(/```(?:skill|markdown|md)?\s*\n---[\s\S]*?```/g, "（草稿已更新 →）"))}</div>`).join("")
+        : `<div class="bub a">想做一個什麼樣的 skill？說說它要處理什麼、輸入是什麼、希望輸出長怎樣。例如：「把我貼的會議逐字稿整理成決議和待辦」。</div>`}</div>
+      <div class="row2"><textarea id="b-in" rows="3" style="flex:1" placeholder="描述你想要的 skill，或要怎麼改（⌘/Ctrl + Enter 送出）"></textarea></div>
+      <div class="row2"><select id="b-p">${providerOptions()}</select><button data-b-send>送出</button>
+        <button class="ghost" data-b-reset>重新開始</button></div>
+    </div>
+    <div class="draft">
+      <div class="muted" style="font-size:12.5px;margin-bottom:4px">SKILL.md 草稿（可以直接改）</div>
+      <textarea id="b-draft" placeholder="構建器寫的草稿會出現在這裡">${esc(builderDraft)}</textarea>
+      <div class="row2"><button data-b-save ${builderDraft ? "" : "disabled"}>存成 skill</button><span id="b-msg"></span></div>
+    </div></div>`;
+}
+function showBuilder() {
+  skSel = null; document.querySelectorAll("#sk-list .sk").forEach(el => el.classList.remove("sel"));
+  showPanel("builder", builderHtml(), "Skill 對話構建器");
+  setTimeout(() => { const c = $("#b-chat"); if (c) c.scrollTop = c.scrollHeight; const s = $("#b-p"); if (s && PROV.claude?.ok) s.value = "claude"; }, 0);
+}
+async function builderSend() {
+  const inp = $("#b-in"), text = inp.value.trim();
+  if (!text || builderBusy) return;
+  builderBusy = true; inp.value = "";
+  builderMsgs.push({role: "user", content: text}); saveBuilder();
+  const chat = $("#b-chat");
+  const u = document.createElement("div"); u.className = "bub u"; u.textContent = text; chat.appendChild(u); enterEl(u, 0, 6);
+  const w = document.createElement("div"); w.className = "bub a wait"; w.innerHTML = `<span class="pulse"></span>正在寫…`; chat.appendChild(w); enterEl(w, 80, 6);
+  chat.scrollTop = chat.scrollHeight;
+  $("[data-b-send]").disabled = true;
+  const r = await post("/api/builder/chat", {messages: builderMsgs, provider: $("#b-p").value});
+  builderBusy = false;
+  if (skMode !== "builder") return;
+  $("[data-b-send]").disabled = false;
+  w.remove();
+  const a = document.createElement("div"); a.className = "bub a";
+  if (!r.ok) { a.innerHTML = `<span class="bad-text">${esc(r.error || "失敗")}</span>`; builderMsgs.pop(); saveBuilder(); }
+  else {
+    builderMsgs.push({role: "assistant", content: r.reply});
+    a.textContent = r.reply.replace(/```(?:skill|markdown|md)?\s*\n---[\s\S]*?```/g, "（草稿已更新 →）");
+    if (r.draft) {
+      builderDraft = r.draft; const ta = $("#b-draft"); ta.value = r.draft;
+      fade(ta, {opacity: [0.35, 1]}, T.fade);                // 草稿換了：亮度先到（lumin 比位移快）
+      $("[data-b-save]").disabled = false;
+    }
+    saveBuilder();
+  }
+  chat.appendChild(a); enterEl(a, 0, 6); chat.scrollTop = chat.scrollHeight;
+}
+
+document.addEventListener("click", async e => {
+  const tb = e.target.closest("[data-tab]"); if (tb) { switchTab(tb.dataset.tab); return; }
+  const sk = e.target.closest("[data-sk]"); if (sk) { showSkill(sk.dataset.sk); return; }
+  const imp = e.target.closest("[data-imp]");
+  if (imp) { closeMenus(); imp.dataset.imp === "file" ? $("#sk-file").click() : showGithub(); return; }
+  if (e.target.closest("[data-gh-go]")) { doImport({type: "github", url: $("#gh-url").value}, "#gh-msg"); return; }
+  if (e.target.closest("[data-py-cancel]")) { pendingPy = null; skMode = null; $("#sk-panel").innerHTML = '<div class="empty">已取消</div>'; return; }
+  if (e.target.closest("[data-py-go]")) {
+    const f = pendingPy; if (!f) return;
+    doImport({type: "file", filename: f.name, content: await b64(f), confirm_code: $("#py-ok").checked}, "#py-msg"); return;
+  }
+  if (e.target.closest("[data-sk-builder]")) { showBuilder(); return; }
+  if (e.target.closest("[data-b-send]")) { builderSend(); return; }
+  if (e.target.closest("[data-b-reset]")) { builderMsgs = []; builderDraft = ""; saveBuilder(); skMode = null; showBuilder(); return; }
+  if (e.target.closest("[data-b-save]")) {
+    const r = await post("/api/builder/save", {draft: $("#b-draft").value});
+    if (!r.ok) { $("#b-msg").innerHTML = `<span class="bad-text">${esc(r.error)}</span>`; return; }
+    await loadSkills(false); toast(`已存成 skill：${r.name}`);
+    builderMsgs = []; builderDraft = ""; saveBuilder(); showSkill(r.name); return;
+  }
+  const tr = e.target.closest("[data-sk-try]");
+  if (tr) {
+    const input = $("#sk-try-in").value.trim(); if (!input) { $("#sk-try-in").focus(); return; }
+    tr.disabled = true;
+    const r = await post(`/api/skills/${encodeURIComponent(tr.dataset.skTry)}/run`, {input, provider: $("#sk-try-p").value});
+    tr.disabled = false;
+    if (!r.ok) { toast(r.error || "無法執行", 4000); return; }
+    // 到工作流分頁看它跑
+    selWf = null; showAll = false; lastSig = {};
+    await switchTab("wf");
+    setTimeout(async () => { selRun = (await j("/api/runs?workflow=" + encodeURIComponent(r.workflow)))[0]?.id; lastSig = {}; tick(); }, 400);
+    return;
+  }
+  const mk = e.target.closest("[data-sk-wf]");
+  if (mk) {
+    const s = SKILLS.find(x => x.name === mk.dataset.skWf);
+    const k = s.kind === "knowledge";
+    openEditor(null, {
+      name: s.name.replace(/_/g, "-"), title: s.title || s.name, description: s.description.slice(0, 120),
+      provider: firstProvider(), skills: k ? ["use_skill", "read_skill_file", "web_search", "fetch_url", "save_report"] : [s.name],
+      system: k ? `你是自動執行任務的 agent，一律用繁體中文（台灣）。一開始先用 use_skill 載入「${s.name}」，照它的指示做事。` : undefined,
+      task: "（寫下這個工作流每次要做的事；手動執行時輸入框的文字會附在最後）"});
+    return;
+  }
+  const del = e.target.closest("[data-sk-del]");
+  if (del) {
+    if (!del.dataset.armed) { del.dataset.armed = "1"; del.textContent = "再點一次確定"; return; }
+    const r = await post(`/api/skills/${encodeURIComponent(del.dataset.skDel)}/delete`);
+    if (!r.ok) { toast(r.error, 4000); return; }
+    skSel = null; skMode = null; $("#sk-panel").innerHTML = '<div class="empty">已刪除（移到 skills/.trash）</div>';
+    await loadSkills(false); return;
+  }
+});
+document.addEventListener("change", async e => {
+  if (e.target.id === "py-ok") { const b = $("[data-py-go]"); if (b) b.disabled = !e.target.checked; }
+  if (e.target.id === "sk-file" && e.target.files[0]) {
+    const f = e.target.files[0]; e.target.value = "";
+    if (/\.py$/i.test(f.name)) { showPyConfirm(f); return; }
+    await showPanel("upload", `<h3>匯入 ${esc(f.name)}</h3><div id="up-msg"></div>`, "匯入");
+    doImport({type: "file", filename: f.name, content: await b64(f)}, "#up-msg");
+  }
+});
+document.addEventListener("keydown", e => {
+  if (e.target.id === "b-in" && e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); builderSend(); }
+  if (e.target.id === "gh-url" && e.key === "Enter") doImport({type: "github", url: e.target.value}, "#gh-msg");
+  if (e.target.id === "sk-try-in" && e.key === "Enter") document.querySelector("[data-sk-try]")?.click();
+});
+document.addEventListener("input", e => { if (e.target.id === "b-draft") { builderDraft = e.target.value; saveBuilder(); const b = $("[data-b-save]"); if (b) b.disabled = !builderDraft.trim(); } });
+const b64 = f => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = no; r.readAsDataURL(f); });
+
 // ── 輪詢 ───────────────────────────────────────────
 let busy = false, again = false;
 async function tick() {
@@ -1089,12 +1609,16 @@ async function liveLoop() {
   try { active = await loadLive(); } catch {}
   setTimeout(liveLoop, active ? 700 : 2500);
 }
-(async () => {
-  try { [PROV, SKILLS] = await Promise.all([j("/api/providers"), j("/api/skills")]); } catch {}
+async function start() {
+  try { [PROV, SKILLS, SETTINGS, USAGE] = await Promise.all([j("/api/providers"), j("/api/skills"), j("/api/settings"), j("/api/usage")]); } catch {}
+  placeTabInd(true);
   await tick(); liveLoop();
   setInterval(tick, 3000);
-  setInterval(async () => { try { PROV = await j("/api/providers"); } catch {} }, 30000);
-})();
+  setInterval(async () => { try { [PROV, USAGE] = await Promise.all([j("/api/providers"), j("/api/usage")]); } catch {} }, 30000);
+}
+// 原生視窗要等 pywebview 把橋接接好才能開始；瀏覽器直接開始
+if (window.pywebview?.api?.request || !window.__NATIVE__) start();
+else window.addEventListener("pywebviewready", start, {once: true});
 </script>
 </body>
 </html>

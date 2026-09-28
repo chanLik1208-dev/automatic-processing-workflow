@@ -1,4 +1,5 @@
 """監控面板 + API。啟動：python3 server.py"""
+import base64
 import json
 import os
 import sys
@@ -13,6 +14,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import engine
+import settings_api
+import skill_admin
 
 
 def workflows_view():
@@ -38,7 +41,10 @@ def workflows_view():
 
 
 def find_browser():
-    """PDF 要靠 Chromium 系的瀏覽器印；Windows 一定有 Edge，macOS / Linux 找常見的幾個。"""
+    """PDF 要靠 Chromium 系的瀏覽器印；設定裡有指定就用指定的，否則 Windows 用 Edge，macOS / Linux 找常見的幾個。"""
+    custom = engine.cfg("export.browser_path", "")
+    if custom and os.path.exists(os.path.expanduser(custom)):
+        return os.path.expanduser(custom)
     if sys.platform == "darwin":
         cands = [f"/Applications/{a}.app/Contents/MacOS/{a}" for a in
                  ("Google Chrome", "Microsoft Edge", "Chromium", "Brave Browser")]
@@ -97,20 +103,18 @@ def convert(html, fmt):
         return out.read_bytes(), "pdf"
 
 
-class H(BaseHTTPRequestHandler):
-    def log_message(self, *a):
-        pass
+class Api:
+    """所有路由。HTTP 伺服器（headless / 瀏覽器模式）和原生視窗的橋接都呼叫這裡，
+    差別只在回應怎麼送出去（send / send_file 由子類別實作）。"""
 
     def send(self, obj, code=200, ctype="application/json"):
-        body = obj if isinstance(obj, bytes) else json.dumps(obj, ensure_ascii=False).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", ctype + "; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        raise NotImplementedError
 
-    def do_GET(self):
-        u = urlparse(self.path)
+    def send_file(self, data, headers):
+        raise NotImplementedError
+
+    def route_get(self, raw_path):
+        u = urlparse(raw_path)
         q = parse_qs(u.query)
         if u.path == "/":
             return self.send((engine.APP_DIR / "dashboard.html").read_bytes(), ctype="text/html")
@@ -124,10 +128,18 @@ class H(BaseHTTPRequestHandler):
                 v["content"] = (v.get("content") or "")[-6000:]
                 out.append(v)
             return self.send(out)
+        if u.path == "/api/usage":
+            week = time.time() - 7 * 86400
+            return self.send({"today": engine.usage(), "week": engine.usage(since=week), "cli_limits": engine.cli_limits()})
+        if u.path == "/api/instance":
+            return self.send({"data_dir": str(engine.ROOT.resolve())})
+        if u.path == "/api/settings":
+            return self.send(settings_api.masked())
         if u.path == "/api/providers":
-            return self.send({n: engine.ping_provider(n) for n in engine.load_config()["providers"]})
+            return self.send({n: engine.ping_provider(n) for n, p in engine.load_config()["providers"].items()
+                              if p.get("enabled", True)})
         if u.path == "/api/skills":
-            return self.send([m.SPEC for m in engine.load_skills().values()])
+            return self.send(skill_admin.list_skills())
         if u.path == "/api/runs":
             wf = q.get("workflow", [None])[0]
             with engine.db() as c:
@@ -146,20 +158,9 @@ class H(BaseHTTPRequestHandler):
             return self.send({"run": dict(run), "steps": [dict(s) for s in steps]})
         self.send({"error": "not found"}, 404)
 
-    def do_POST(self):
-        # 要求 JSON content-type（跨站請求會先被 CORS preflight 擋下），且 Origin 必須是自己
-        origin = self.headers.get("Origin")
-        host = self.headers.get("Host", "")
-        if "application/json" not in (self.headers.get("Content-Type") or "") or \
-                (origin and origin not in (f"http://{host}", f"https://{host}")):
-            return self.send({"error": "forbidden"}, 403)
-        u = urlparse(self.path)
+    def route_post(self, raw_path, body):
+        u = urlparse(raw_path)
         parts = u.path.strip("/").split("/")
-        n = int(self.headers.get("Content-Length") or 0)
-        try:
-            body = json.loads(self.rfile.read(n) or b"{}")
-        except ValueError:
-            return self.send({"error": "body 不是 JSON"}, 400)
         if parts == ["api", "export"]:
             fmt, html = body.get("format"), body.get("html") or ""
             if fmt not in ("docx", "pdf") or not html or len(html) > 5_000_000:
@@ -169,17 +170,34 @@ class H(BaseHTTPRequestHandler):
             except Exception as e:
                 return self.send({"error": f"轉換失敗：{e}"}, 500)
             base = str(body.get("filename") or "report").rsplit(".", 1)[0]
-            name = urllib.parse.quote(f"{base}.{ext}")
-            self.send_response(200)
-            self.send_header("X-Export-Ext", ext)
-            self.send_header("Content-Type", {"docx": "application/vnd.openxmlformats-officedocument."
-                                                      "wordprocessingml.document", "doc": "application/msword",
-                                              "pdf": "application/pdf"}[ext])
-            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{name}")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-            return
+            return self.send_file(data, {
+                "X-Export-Ext": ext,
+                "Content-Type": {"docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                 "doc": "application/msword", "pdf": "application/pdf"}[ext],
+                "Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(f'{base}.{ext}')}"})
+        if parts == ["api", "settings"]:
+            try:
+                return self.send({"ok": True, "settings": settings_api.save(body)})
+            except (ValueError, TypeError) as e:
+                return self.send({"error": str(e)}, 400)
+        if parts[:2] == ["api", "skills"] or parts[:2] == ["api", "builder"]:
+            try:
+                if parts == ["api", "skills", "import"]:
+                    return self.send({"ok": True, "imported": skill_admin.import_skill(body)})
+                if parts == ["api", "builder", "chat"]:
+                    return self.send({"ok": True, **skill_admin.builder_chat(body)})
+                if parts == ["api", "builder", "save"]:
+                    return self.send({"ok": True, "name": skill_admin.builder_save(body)})
+                if len(parts) == 4 and parts[1] == "skills" and parts[3] == "delete":
+                    return self.send({"ok": True, "result": skill_admin.delete_skill(parts[2])})
+                if len(parts) == 4 and parts[1] == "skills" and parts[3] == "run":
+                    wf = skill_admin.adhoc_workflow(parts[2], body.get("provider") or "claude", body.get("model") or "")
+                    name = f"skill:{parts[2]}"
+                    return self.send({"ok": True, "started": engine.start_async(name, "manual", body.get("input", ""), wf),
+                                      "workflow": name})
+            except Exception as e:
+                return self.send({"error": str(e)}, 400)
+            return self.send({"error": "not found"}, 404)
         if parts[:2] != ["api", "workflows"] or len(parts) < 3:
             return self.send({"error": "not found"}, 404)
         name = parts[2]
@@ -205,6 +223,70 @@ class H(BaseHTTPRequestHandler):
         except (ValueError, TypeError) as e:
             return self.send({"error": str(e)}, 400)
         self.send({"error": "not found"}, 404)
+
+
+class H(Api, BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def send(self, obj, code=200, ctype="application/json"):
+        body = obj if isinstance(obj, bytes) else json.dumps(obj, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", ctype + "; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_file(self, data, headers):
+        self.send_response(200)
+        for k, v in headers.items():
+            self.send_header(k, v)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        self.route_get(self.path)
+
+    def do_POST(self):
+        # 要求 JSON content-type（跨站請求會先被 CORS preflight 擋下），且 Origin 必須是自己
+        origin = self.headers.get("Origin")
+        host = self.headers.get("Host", "")
+        if "application/json" not in (self.headers.get("Content-Type") or "") or \
+                (origin and origin not in (f"http://{host}", f"https://{host}")):
+            return self.send({"error": "forbidden"}, 403)
+        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            body = json.loads(self.rfile.read(n) or b"{}")
+        except ValueError:
+            return self.send({"error": "body 不是 JSON"}, 400)
+        self.route_post(self.path, body)
+
+
+class Captured(Api):
+    """原生視窗用：不經過網路，直接把回應收下來交給介面。"""
+
+    def __init__(self):
+        self.result = None
+
+    def send(self, obj, code=200, ctype="application/json"):
+        if isinstance(obj, bytes):
+            self.result = {"status": code, "ctype": ctype, "text": obj.decode("utf-8", "replace")}
+        else:
+            self.result = {"status": code, "ctype": ctype, "json": obj}
+
+    def send_file(self, data, headers):
+        self.result = {"status": 200, "ctype": headers.get("Content-Type"), "headers": headers,
+                       "b64": base64.b64encode(data).decode()}
+
+
+def call(method, path, body=None):
+    c = Captured()
+    try:
+        c.route_get(path) if method == "GET" else c.route_post(path, body or {})
+    except Exception as e:
+        c.send({"error": f"內部錯誤：{e}"}, 500)
+    return c.result or {"status": 500, "json": {"error": "沒有回應"}}
 
 
 def serve(port=None, on_ready=None):

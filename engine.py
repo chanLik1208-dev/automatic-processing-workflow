@@ -56,8 +56,59 @@ def seed_data_dir():
 _db_lock = threading.Lock()
 
 
+# 所有可以在「設定」頁調整的值和它們的預設；設定檔裡沒寫的就用這裡的
+SETTING_DEFAULTS = {
+    "language": "繁體中文（台灣）",
+    "server": {"host": "127.0.0.1", "port": 8787},
+    "tick_seconds": 30,
+    "limits": {"max_tokens": 4096, "request_timeout": 300, "cli_timeout": 600, "max_steps": 12,
+               "fail_streak": 3, "stall_seconds": 45},
+    "lmstudio_guard": {"nan_watchdog": True, "raw_capture": True},
+    "search": {"region": "tw-tzh", "limit": 8},
+    "fetch": {"max_chars": 6000},
+    "notify": {"enabled": True},
+    "export": {"browser_path": ""},
+    "readable_paths": ["{data}/reports/*"],
+    # 自動模式：照順序挑第一個「可用、而且沒超過用量上限」的模型來源；跑到一半出錯就換下一個
+    "auto": {"order": [{"provider": "claude", "model": "", "max_daily_tokens": 0, "max_daily_runs": 0},
+                       {"provider": "lmstudio", "model": "", "max_daily_tokens": 0, "max_daily_runs": 0},
+                       {"provider": "deepseek", "model": "", "max_daily_tokens": 0, "max_daily_runs": 0}],
+             "cli_max_utilization": 0.9},
+    # 本地備用：跟自動模式、工作流自己的備援都分開；其他全部失敗時最後落到這裡
+    "local_fallback": {"enabled": False, "provider": "lmstudio", "model": ""},
+}
+
+
+def _merge(base, over):
+    out = dict(base)
+    for k, v in (over or {}).items():
+        out[k] = _merge(base[k], v) if isinstance(base.get(k), dict) and isinstance(v, dict) else v
+    return out
+
+
 def load_config():
-    return json.loads((ROOT / "config.json").read_text())
+    return _merge(SETTING_DEFAULTS, json.loads((ROOT / "config.json").read_text()))
+
+
+def cfg(path, default=None):
+    """cfg("limits.max_tokens") 這種寫法讀設定。"""
+    cur = load_config()
+    for k in path.split("."):
+        if not isinstance(cur, dict) or k not in cur:
+            return default
+        cur = cur[k]
+    return cur
+
+
+def save_config(c):
+    path = ROOT / "config.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(c, ensure_ascii=False, indent=2) + "\n")
+    try:
+        os.chmod(tmp, 0o600)                     # 裡面可能有 API key：只有自己能讀
+    except OSError:
+        pass
+    tmp.replace(path)
 
 
 # ---------- 資料庫 ----------
@@ -125,7 +176,7 @@ def load_workflows():
             continue
         wf.setdefault("name", f.stem)
         wf.setdefault("enabled", True)
-        wf.setdefault("max_steps", 12)
+        wf.setdefault("max_steps", cfg("limits.max_steps", 12))
         wfs[wf["name"]] = wf
     return wfs
 
@@ -143,12 +194,12 @@ def validate_workflow(d):
     if not wf["title"]:
         raise ValueError("名稱不能是空的")
     wf["description"] = str(d.get("description") or "").strip()[:300]
-    if d.get("provider") not in providers:
+    if d.get("provider") not in providers and d.get("provider") != "auto":
         raise ValueError(f"不認得的模型來源：{d.get('provider')}")
     wf["provider"] = d["provider"]
     if d.get("model"):
         wf["model"] = str(d["model"]).strip()
-    if d.get("fallback"):
+    if d.get("fallback") and wf["provider"] != "auto":      # 自動模式自己會照優先順序換，不用備援
         if d["fallback"] not in providers or d["fallback"] == wf["provider"]:
             raise ValueError("備援必須是另一個模型來源")
         wf["fallback"] = d["fallback"]
@@ -210,12 +261,17 @@ def trash_workflow(name):
 
 def provider_conf(name):
     p = dict(load_config()["providers"][name])
+    p["_name"] = name
+    if not p.get("enabled", True):
+        raise RuntimeError(f"{p.get('label') or name} 已在設定裡停用")
     if p.get("type") == "cli":
         return p
-    if "api_key_env" in p:
-        p["api_key"] = os.environ.get(p["api_key_env"], "")
-        if not p["api_key"]:
-            raise RuntimeError(f"{name}: 環境變數 {p['api_key_env']} 沒有設定")
+    if p.get("api_key_env") and os.environ.get(p["api_key_env"]):
+        p["api_key"] = os.environ[p["api_key_env"]]
+    if p.get("needs_key") or p.get("api_key_env"):
+        if not p.get("api_key"):
+            raise RuntimeError(f"{p.get('label') or name} 還沒設定 API key（到「設定 → 模型來源」填入）")
+    p.setdefault("api_key", "none")
     return p
 
 
@@ -340,11 +396,13 @@ def cancel(name):
 LIVE = {}
 
 
-def chat(provider, model, messages, tools, live=None, timeout=300, max_tokens=4096):
+def chat(provider, model, messages, tools, live=None, timeout=None, max_tokens=None):
+    timeout = timeout or cfg("limits.request_timeout", 300)
+    max_tokens = max_tokens or cfg("limits.max_tokens", 4096)
     """串流呼叫，邊收邊更新 live；回傳格式跟非串流的 chat completion 一樣。"""
     p = provider_conf(provider)
     if p.get("type") == "cli":
-        return chat_cli(p, model, messages, tools, live if live is not None else {})
+        return chat_cli(p, model, messages, tools, live if live is not None else {}, cfg("limits.cli_timeout", 600))
     # 一定要有上限：模型偶爾會鬼打牆地一直生成，沒上限就會一路寫到 context 滿
     body = {"model": model or p["default_model"] or _loaded_model(p), "messages": messages, "temperature": 0.3,
             "max_tokens": max_tokens, "stream": True, "stream_options": {"include_usage": True}}
@@ -361,8 +419,9 @@ def chat(provider, model, messages, tools, live=None, timeout=300, max_tokens=40
     stop_watch = threading.Event()
     local = "localhost" in p["base_url"] or "127.0.0.1" in p["base_url"]
     started = time.time()
-    if local:
+    if local and cfg("lmstudio_guard.raw_capture", True):
         _ensure_raw_listener()
+    if local and cfg("lmstudio_guard.nan_watchdog", True):
         threading.Thread(target=_watch_lmstudio, args=(live, stop_watch, body["model"]), daemon=True).start()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -418,7 +477,7 @@ def chat(provider, model, messages, tools, live=None, timeout=300, max_tokens=40
         raise Cancelled()
     if live.get("broken"):
         raise ModelBroken(live["broken"])
-    if local and (not content and not calls or not done and not finish):
+    if local and cfg("lmstudio_guard.raw_capture", True) and (not content and not calls or not done and not finish):
         live["_raw"] = take_raw(body["model"], started, wait=1.5)
     if not content and not calls:
         raise ModelBroken("模型什麼都沒有回傳（可能剛崩潰或正在重新載入）。")
@@ -432,7 +491,7 @@ def chat(provider, model, messages, tools, live=None, timeout=300, max_tokens=40
         c["id"] = c["id"] or f"call_{i}"
         tool_calls.append(c)
     msg = {"role": "assistant", "content": content or None, "reasoning_content": reasoning}
-    if local:
+    if local and cfg("lmstudio_guard.raw_capture", True):
         msg["raw"] = take_raw(body["model"], started)
     if tool_calls:
         msg["tool_calls"] = tool_calls
@@ -453,7 +512,8 @@ TOOL_PROTOCOL = """
 {{"say": "一句話說明你要做什麼（可省略）", "tool_calls": [{{"name": "工具名稱", "arguments": {{...}}}}]}}
 可以一次呼叫好幾個工具。工具的結果會在下一則訊息給你。
 不需要再用工具、要給出最終答案時，直接用一般文字回覆，不要輸出 JSON。
-你沒有其他任何工具或檔案存取能力，只能用上面列出的這些。"""
+你沒有其他任何工具或檔案存取能力，只能用上面列出的這些。
+要用工具就直接輸出 JSON，不要只說「我去查」「請稍候」卻沒有輸出 JSON——沒有 JSON 的回覆會被當成最終答案。"""
 
 
 def _transcript(messages):
@@ -503,7 +563,10 @@ def chat_cli(p, model, messages, tools, live, timeout=600):
     cmd = [shutil.which(p["command"]) or os.path.expanduser(p["path"]),
            "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
            "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--setting-sources", "project",
-           "--system-prompt", system, "--model", model]
+           "--model", model]
+    # Windows 的命令列上限約 32,000 字元：系統提示太長就改放在標準輸入最前面（標準輸入沒有長度限制）
+    long_system = len(system) > 24000
+    cmd += ["--system-prompt", "嚴格遵守輸入開頭「## 系統指示」區塊裡的所有指示，那就是你的系統提示。" if long_system else system]
     tmp = tempfile.mkdtemp(prefix="wf-cli-")         # 在空資料夾執行，不會讀到任何專案的 CLAUDE.md / 設定
     proc = subprocess.Popen(cmd, cwd=tmp, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8")
@@ -512,7 +575,7 @@ def chat_cli(p, model, messages, tools, live, timeout=600):
     killer.start()
     text, thinking, usage, result, err = "", "", {}, None, None
     try:
-        proc.stdin.write(_transcript(messages))
+        proc.stdin.write((f"## 系統指示\n{system}\n\n" if long_system else "") + _transcript(messages))
         proc.stdin.close()
         for line in proc.stdout:
             try:
@@ -533,6 +596,8 @@ def chat_cli(p, model, messages, tools, live, timeout=600):
                         live.update(phase="deciding", tool={"name": "", "args": ""})
                     else:
                         live.update(phase="writing", content=text)
+            elif e.get("type") == "rate_limit_event":
+                record_limits(p.get("_name") or p["command"], e.get("rate_limit_info") or {})
             elif e.get("type") == "result":
                 usage, result = e.get("usage") or {}, e.get("result")
                 if e.get("is_error"):
@@ -575,6 +640,105 @@ def _loaded_model(p):
         raise RuntimeError("連不上 LM Studio（請確認已開啟，並在 Developer 分頁啟動 server）")
 
 
+# ---------- 用量與自動模式 ----------
+_limits_lock = threading.Lock()
+
+
+def _limits_path():
+    return ROOT / "data" / "cli_limits.json"
+
+
+def record_limits(provider, info):
+    """訂閱 CLI 每次回應都會附上額度使用率；存起來給自動模式和設定頁看。"""
+    if not info:
+        return
+    with _limits_lock:
+        try:
+            data = json.loads(_limits_path().read_text())
+        except (OSError, ValueError):
+            data = {}
+        data[provider] = {**info, "seen": time.time()}
+        _limits_path().write_text(json.dumps(data))
+
+
+def cli_limits():
+    try:
+        return json.loads(_limits_path().read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def usage(provider=None, since=None):
+    """某段時間內各模型來源的 token 和執行次數（從執行紀錄算）。"""
+    since = since or datetime.datetime.combine(datetime.date.today(), datetime.time()).timestamp()
+    with db() as c:
+        rows = c.execute("SELECT provider, COUNT(*), SUM(tokens_in), SUM(tokens_out) FROM runs WHERE started >= ? "
+                         "GROUP BY provider", (since,)).fetchall()
+    out = {r[0]: {"runs": r[1], "tokens": (r[2] or 0) + (r[3] or 0)} for r in rows}
+    return out.get(provider, {"runs": 0, "tokens": 0}) if provider else out
+
+
+def _limit_block(name, p_cfg):
+    """這個來源現在該不該跳過；要跳過就回傳原因。"""
+    info = cli_limits().get(name)
+    if info and info.get("resetsAt", 0) > time.time():
+        util = info.get("utilization")
+        thr = cfg("auto.cli_max_utilization", 0.9)
+        when = datetime.datetime.fromtimestamp(info["resetsAt"]).strftime("%H:%M")
+        win = {"five_hour": "5 小時", "seven_day": "7 天"}.get(info.get("rateLimitType"), "")
+        if info.get("status") == "rejected":
+            return f"{win}額度已用完（{when} 重置）"
+        if util is not None and util >= thr:
+            return f"{win}額度已用 {util:.0%}，超過設定的 {thr:.0%}（{when} 重置）"
+    u = usage(name)
+    if p_cfg.get("max_daily_tokens") and u["tokens"] >= p_cfg["max_daily_tokens"]:
+        return f"今天已用 {u['tokens']:,} tokens，達到上限 {p_cfg['max_daily_tokens']:,}"
+    if p_cfg.get("max_daily_runs") and u["runs"] >= p_cfg["max_daily_runs"]:
+        return f"今天已跑 {u['runs']} 次，達到上限 {p_cfg['max_daily_runs']}"
+    return None
+
+
+def provider_label(name):
+    return (load_config()["providers"].get(name) or {}).get("label") or name
+
+
+def local_fallback():
+    """本地備用開著、而且那個來源現在能用，就回傳 (provider, model)，否則 None。"""
+    lf = cfg("local_fallback", {}) or {}
+    name = lf.get("provider")
+    if not lf.get("enabled") or not name or name not in load_config()["providers"]:
+        return None
+    if not ping_provider(name).get("ok"):
+        return None
+    return name, lf.get("model") or None
+
+
+def pick_auto(tried=()):
+    """照優先順序挑一個能用的來源；回傳 (provider, model, 說明)。"""
+    providers = load_config()["providers"]
+    skipped = []
+    for item in cfg("auto.order", []):
+        name = item.get("provider")
+        p = providers.get(name)
+        if not p or name in tried:
+            continue
+        label = p.get("label") or name
+        if not p.get("enabled", True):
+            skipped.append(f"{label}：已停用")
+            continue
+        why = _limit_block(name, item)
+        if why:
+            skipped.append(f"{label}：{why}")
+            continue
+        ok = ping_provider(name)
+        if not ok.get("ok"):
+            skipped.append(f"{label}：{ok.get('error', '無法使用')}")
+            continue
+        note = f"自動模式選了 {label}" + (f"（跳過 {'；'.join(skipped)}）" if skipped else "")
+        return name, item.get("model") or None, note
+    raise RuntimeError("自動模式找不到能用的模型來源：" + ("；".join(skipped) or "設定裡的優先順序是空的"))
+
+
 def ping_provider(name):
     try:
         p = provider_conf(name)
@@ -592,7 +756,7 @@ def ping_provider(name):
                                      headers={"Authorization": f"Bearer {p['api_key']}"})
         with urllib.request.urlopen(req, timeout=5) as r:
             ids = [m["id"] for m in json.loads(r.read()).get("data", [])]
-        return {"ok": True, "models": ids, "default_model": p["default_model"]}
+        return {"ok": True, "models": ids, "default_model": p["default_model"], "label": p.get("label")}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -603,14 +767,17 @@ def strip_think(text):
 
 # ---------- Agent 迴圈 ----------
 
-def run_workflow(name, trigger="manual", extra_input=""):
-    wf = load_workflows()[name]
+def run_workflow(name, trigger="manual", extra_input="", wf=None):
+    wf = dict(wf) if wf else load_workflows()[name]
+    wf.setdefault("max_steps", cfg("limits.max_steps", 12))
     skills = load_skills()
     allowed = [s for s in wf.get("skills", []) if s in skills]
     tools = [{"type": "function", "function": skills[s].SPEC} for s in allowed]
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
     system = wf.get("system", "你是一個自動執行任務的 agent。") + f"\n\n現在時間：{now}"
+    if cfg("language"):
+        system += f"\n回覆一律使用{cfg('language')}。"
     if "use_skill" in allowed:
         cat = "\n".join(f"- {n}：{d}" for n, d in skills["use_skill"].catalog())
         system += f"\n\n可用的知識型 skill（任務相關時先用 use_skill 載入）：\n{cat}"
@@ -621,7 +788,15 @@ def run_workflow(name, trigger="manual", extra_input=""):
         task += f"\n\n額外輸入：{extra_input}"
     messages = [{"role": "system", "content": system}, {"role": "user", "content": task}]
 
-    provider, model = wf.get("provider", "lmstudio"), wf.get("model")
+    auto = wf.get("provider") == "auto"
+    auto_note, tried = None, []
+    if auto:
+        try:
+            provider, model, auto_note = pick_auto()
+        except RuntimeError as e:
+            provider, model, auto_note = "auto", None, str(e)
+    else:
+        provider, model = wf.get("provider", "lmstudio"), wf.get("model")
     run_id = _exec("INSERT INTO runs (workflow, provider, model, trigger, status, started, input) VALUES (?,?,?,?,?,?,?)",
                    (name, provider, model or "", trigger, "running", time.time(), task))
     idx, tin, tout = 0, 0, 0
@@ -629,7 +804,20 @@ def run_workflow(name, trigger="manual", extra_input=""):
                            "started": time.time(), "round": 0, "provider": provider, "model": model or ""}
 
     fails, first_err = 0, None
+    used = {provider}                                  # 這次執行用過的來源，不會重複換回去
+    if auto_note:
+        add_step(run_id, idx, "note", "auto", "", auto_note)
+        idx += 1
+    lf = local_fallback()
+    if provider == "auto" and lf:                      # 自動模式一個都挑不到：直接用本地備用
+        provider, model = lf
+        used.add(provider)
+        add_step(run_id, idx, "note", "local", "", f"改用本地備用 {provider_label(provider)}")
+        idx += 1
+        _exec("UPDATE runs SET provider=?, model=? WHERE id=?", (provider, model or "", run_id))
     try:
+        if provider == "auto":
+            raise RuntimeError(auto_note)
         for rnd in range(wf["max_steps"]):
             if run_id in _cancel:
                 raise Cancelled()
@@ -637,18 +825,29 @@ def run_workflow(name, trigger="manual", extra_input=""):
             live.update(round=rnd + 1, phase="waiting", since=t0, reasoning="", content="", tool=None, last_token=None,
                         provider=provider, model=model or "")
             try:
-                resp = chat(provider, model, messages, tools, live, max_tokens=wf.get("max_tokens", 4096))
+                resp = chat(provider, model, messages, tools, live, max_tokens=wf.get("max_tokens"))
             except Cancelled:
                 raise
             except Exception as e:
                 # 主 provider 掛了就換備援，同一個 run 裡接著跑
                 fb = wf.get("fallback")
                 first_err = first_err or str(e)
-                if fb and fb != provider:
+                fb_model, how = wf.get("fallback_model"), "備援"
+                if auto:                                      # 自動模式：換優先順序裡的下一個
+                    tried.append(provider)
+                    try:
+                        fb, fb_model, _ = pick_auto(tuple(used) + tuple(tried))
+                    except RuntimeError:
+                        fb = None
+                if not fb or fb in used:                      # 前面都沒得換：最後試本地備用
+                    lf = local_fallback()
+                    fb, fb_model, how = (lf[0], lf[1], "本地備用") if lf and lf[0] not in used else (None, None, "")
+                if fb and fb not in used:
                     raw = live.pop("_raw", None)
                     add_step(run_id, idx, "error", provider, json.dumps({"raw": raw}, ensure_ascii=False) if raw else "",
-                             f"{e}\n→ 改用備援 {fb}"); idx += 1
-                    provider, model = fb, wf.get("fallback_model")
+                             f"{e}\n→ 改用{how} {fb}"); idx += 1
+                    used.add(fb)
+                    provider, model = fb, fb_model
                     _exec("UPDATE runs SET provider=?, model=? WHERE id=?", (provider, model or "", run_id))
                     continue
                 raise
@@ -687,9 +886,9 @@ def run_workflow(name, trigger="manual", extra_input=""):
                 idx += 1
                 failed = result.startswith(("[skill 錯誤]", "找不到", "抓不到", "這個路徑不", "沒有這個", "只接受"))
                 fails = fails + 1 if failed else 0
-                if fails >= 3:
+                if fails >= cfg("limits.fail_streak", 3):
                     # 小模型碰到錯誤常會一直換個猜法重試；連錯三次就叫它停下來照實回報
-                    result += ("\n\n[系統] 已經連續失敗 3 次。不要再猜網址或路徑，"
+                    result += (f"\n\n[系統] 已經連續失敗 {fails} 次。不要再猜網址或路徑，"
                                "直接回報你缺什麼資訊、哪裡失敗，然後結束。")
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": result[:40000]})
 
@@ -739,7 +938,7 @@ _running = set()
 _running_lock = threading.Lock()
 
 
-def start_async(name, trigger="manual", extra_input=""):
+def start_async(name, trigger="manual", extra_input="", wf=None):
     with _running_lock:
         if name in _running:
             return False
@@ -747,16 +946,41 @@ def start_async(name, trigger="manual", extra_input=""):
 
     def job():
         try:
-            run_workflow(name, trigger, extra_input)
+            run_workflow(name, trigger, extra_input, wf)
         finally:
             _running.discard(name)
     threading.Thread(target=job, daemon=True).start()
     return True
 
 
+_sched_lock = None
+
+
+def acquire_scheduler_lock():
+    """同一個資料夾同時只能有一個程式跑排程，否則工作流會被執行兩次。鎖跟著行程走，程式結束就自動釋放。"""
+    global _sched_lock
+    f = open(ROOT / "data" / "scheduler.lock", "a+")
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return False
+    _sched_lock = f
+    return True
+
+
 def scheduler_loop():
-    tick = load_config().get("tick_seconds", 30)
+    if not acquire_scheduler_lock():
+        print(f"另一個程式已經在跑 {ROOT} 的排程，這裡就不重複跑了（手動執行照常可用）。")
+        return
     while True:
+        tick = max(5, int(cfg("tick_seconds", 30)))
         try:
             for name, wf in load_workflows().items():
                 if not wf["enabled"]:

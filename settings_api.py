@@ -1,0 +1,122 @@
+"""設定頁的讀寫：驗證每個欄位；API key 只寫不讀（回給瀏覽器的只有末四碼）。"""
+import re
+
+import engine
+
+NUM = {  # 路徑: (最小, 最大)
+    "tick_seconds": (5, 3600), "server.port": (1024, 65535),
+    "limits.max_tokens": (256, 65536), "limits.request_timeout": (30, 3600), "limits.cli_timeout": (30, 7200),
+    "limits.max_steps": (1, 60), "limits.fail_streak": (1, 20), "limits.stall_seconds": (10, 3600),
+    "search.limit": (1, 15), "fetch.max_chars": (1000, 100000),
+}
+BOOL = ["lmstudio_guard.nan_watchdog", "lmstudio_guard.raw_capture", "notify.enabled"]
+TEXT = {"language": 40, "search.region": 20, "export.browser_path": 500}
+
+
+def _get(d, path):
+    for k in path.split("."):
+        d = d.get(k, {}) if isinstance(d, dict) else {}
+    return d
+
+
+def _set(d, path, v):
+    *head, last = path.split(".")
+    for k in head:
+        d = d.setdefault(k, {})
+    d[last] = v
+
+
+def masked():
+    c = engine.load_config()
+    for name, p in c.get("providers", {}).items():
+        key = p.pop("api_key", "")
+        p["key_hint"] = f"已設定（末四碼 {key[-4:]}）" if key else ""
+        p["key_from_env"] = bool(p.get("api_key_env") and engine.os.environ.get(p["api_key_env"]))
+        p.pop("install", None)
+    return c
+
+
+def save(body):
+    raw = engine.json.loads((engine.ROOT / "config.json").read_text())
+    for path, (lo, hi) in NUM.items():
+        v = _get(body, path)
+        if v != {}:
+            try:
+                v = int(v)
+            except (TypeError, ValueError):
+                raise ValueError(f"{path} 要是數字")
+            if not lo <= v <= hi:
+                raise ValueError(f"{path} 要在 {lo}–{hi} 之間")
+            _set(raw, path, v)
+    for path in BOOL:
+        v = _get(body, path)
+        if v != {}:
+            _set(raw, path, bool(v))
+    for path, n in TEXT.items():
+        v = _get(body, path)
+        if v != {}:
+            _set(raw, path, str(v).strip()[:n])
+    if "readable_paths" in body:
+        paths = [str(p).strip() for p in body["readable_paths"] if str(p).strip()]
+        if any(p in ("/", "~", "~/**", "/**") or p.startswith("/**") for p in paths):
+            raise ValueError("讀檔白名單不能開放整個磁碟或整個家目錄")
+        raw["readable_paths"] = paths[:50]
+
+    if "auto" in body:
+        a = body["auto"] or {}
+        order, seen = [], set()
+        for it in a.get("order") or []:
+            name = str(it.get("provider") or "")
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            order.append({"provider": name, "model": str(it.get("model") or "")[:120],
+                          "max_daily_tokens": max(0, int(it.get("max_daily_tokens") or 0)),
+                          "max_daily_runs": max(0, int(it.get("max_daily_runs") or 0))})
+        thr = float(a.get("cli_max_utilization", 0.9))
+        if not 0.1 <= thr <= 1:
+            raise ValueError("訂閱額度門檻要在 10%–100% 之間")
+        raw["auto"] = {"order": order, "cli_max_utilization": thr}
+
+    if "local_fallback" in body:
+        lf = body["local_fallback"] or {}
+        raw["local_fallback"] = {"enabled": bool(lf.get("enabled")), "provider": str(lf.get("provider") or "lmstudio"),
+                                 "model": str(lf.get("model") or "")[:120]}
+
+    old = raw.get("providers", {})
+    new = {}
+    for name, p in (body.get("providers") or {}).items():
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,30}", name):
+            raise ValueError(f"模型來源代號 {name} 只能用英文小寫、數字、- 和 _")
+        prev = dict(old.get(name, {}))
+        kind = prev.get("type", p.get("type", "openai"))
+        q = {**prev, "label": str(p.get("label") or prev.get("label") or name)[:40],
+             "enabled": bool(p.get("enabled", True)), "default_model": str(p.get("default_model") or "")[:120]}
+        if kind == "cli":
+            q["type"] = "cli"
+            if p.get("path") is not None:
+                q["path"] = str(p["path"]).strip()[:500]
+        else:
+            q.pop("type", None)
+            url = str(p.get("base_url") or prev.get("base_url") or "").strip()
+            if not re.match(r"^https?://", url):
+                raise ValueError(f"{q['label']} 的網址要以 http:// 或 https:// 開頭")
+            q["base_url"] = url.rstrip("/")
+            q["needs_key"] = bool(p.get("needs_key", prev.get("needs_key") or prev.get("api_key_env")))
+            if p.get("clear_key"):
+                q.pop("api_key", None)
+            elif p.get("new_key"):
+                q["api_key"] = str(p["new_key"]).strip()
+        new[name] = q
+    if new:
+        if not any(v.get("enabled", True) for v in new.values()):
+            raise ValueError("至少要留一個啟用的模型來源")
+        raw["providers"] = new
+    known = set(raw.get("providers", {}))
+    if raw.get("local_fallback", {}).get("enabled") and raw["local_fallback"]["provider"] not in known:
+        raise ValueError("本地備用選的來源不在模型來源清單裡")
+    for it in raw.get("auto", {}).get("order", []):
+        if it["provider"] not in known:
+            raise ValueError(f"自動模式裡的 {it['provider']} 不在模型來源清單裡")
+    engine.save_config(raw)
+    return masked()

@@ -1,4 +1,4 @@
-import json, shutil, subprocess, sys
+import json, pathlib, shutil, subprocess, sys
 
 SPEC = {
     "name": "notify",
@@ -10,7 +10,20 @@ SPEC = {
 }
 
 
+def _cfg(path, default):
+    """讀使用者設定（設定頁存的 config.json）。"""
+    try:
+        cur = json.loads((pathlib.Path(__file__).parent.parent / "config.json").read_text())
+        for k in path.split("."):
+            cur = cur[k]
+        return cur
+    except (OSError, ValueError, KeyError, TypeError):
+        return default
+
+
 def run(title, message):
+    if not _cfg("notify.enabled", True):
+        return "桌面通知已在設定裡關閉，沒有送出"
     title, message = title[:60], message[:200]
     if sys.platform == "darwin":
         script = f"display notification {json.dumps(message, ensure_ascii=False)} with title {json.dumps(title, ensure_ascii=False)}"
