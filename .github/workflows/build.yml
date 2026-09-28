@@ -42,7 +42,7 @@ jobs:
       matrix:
         include:
           - os: macos-14        # Apple Silicon
-          - os: macos-13        # Intel Mac
+          - os: macos-15-intel  # Intel Mac（macos-13 已淘汰，排隊會一直等不到機器）
           - os: ubuntu-22.04    # 用較舊的 glibc 編，新舊發行版都能跑
           - os: windows-latest
     runs-on: ${{ matrix.os }}
