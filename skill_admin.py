@@ -7,6 +7,7 @@ import json
 import re
 import shutil
 import tempfile
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -117,13 +118,17 @@ def import_skill(body):
         if not m:
             raise ValueError("請貼 GitHub repo 網址，例如 https://github.com/owner/repo")
         owner, repo, branch, sub = m.groups()
-        if not branch:
-            with urllib.request.urlopen(urllib.request.Request(
-                    f"https://api.github.com/repos/{owner}/{repo}", headers={"User-Agent": "ai-workflow"}), timeout=20) as r:
-                branch = json.loads(r.read())["default_branch"]
-        url = f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/{branch}"
-        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "ai-workflow"}), timeout=60) as r:
-            data = r.read(MAX_ZIP + 1)
+        # 不用 GitHub API 查預設分支：未登入每小時只有 60 次，很容易用完；archive/HEAD.zip 直接就是預設分支
+        url = f"https://github.com/{owner}/{repo}/archive/{'refs/heads/' + branch if branch else 'HEAD'}.zip"
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "ai-workflow"}), timeout=60) as r:
+                data = r.read(MAX_ZIP + 1)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise ValueError(f"找不到 {owner}/{repo}{'（分支 ' + branch + '）' if branch else ''}：不存在，或是私人 repo")
+            if e.code in (403, 429):
+                raise ValueError("GitHub 暫時限制了下載次數，過幾分鐘再試")
+            raise
         if len(data) > MAX_ZIP:
             raise ValueError("repo 壓縮檔超過 20 MB")
         if sub:                                                   # 只要 repo 裡某個子資料夾
