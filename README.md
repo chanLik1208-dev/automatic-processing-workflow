@@ -1,4 +1,4 @@
-# ai-workflow
+# automatic-processing-workflow
 
 本機跑的 AI 自動化工作流：agent + skill + 排程 + 監控頁。模型走 OpenAI 相容 API，目前接 LM Studio（本機）和 DeepSeek。純 Python 標準庫，不用裝套件。
 
