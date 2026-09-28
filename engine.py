@@ -87,7 +87,7 @@ def _merge(base, over):
 
 
 def load_config():
-    return _merge(SETTING_DEFAULTS, json.loads((ROOT / "config.json").read_text()))
+    return _merge(SETTING_DEFAULTS, json.loads((ROOT / "config.json").read_text(encoding="utf-8")))
 
 
 def cfg(path, default=None):
@@ -103,7 +103,7 @@ def cfg(path, default=None):
 def save_config(c):
     path = ROOT / "config.json"
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(c, ensure_ascii=False, indent=2) + "\n")
+    tmp.write_text(json.dumps(c, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     try:
         os.chmod(tmp, 0o600)                     # 裡面可能有 API key：只有自己能讀
     except OSError:
@@ -170,7 +170,7 @@ def load_workflows():
     wfs = {}
     for f in sorted((ROOT / "workflows").glob("*.json")):
         try:
-            wf = json.loads(f.read_text())
+            wf = json.loads(f.read_text(encoding="utf-8"))
         except ValueError as e:
             print(f"略過格式錯誤的 {f.name}：{e}")
             continue
@@ -240,7 +240,7 @@ def save_workflow(name, d, create=False):
         raise ValueError(f"找不到工作流 {name}")
     wf = validate_workflow(d)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(wf, ensure_ascii=False, indent=2) + "\n")
+    tmp.write_text(json.dumps(wf, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
     return wf
 
@@ -654,16 +654,16 @@ def record_limits(provider, info):
         return
     with _limits_lock:
         try:
-            data = json.loads(_limits_path().read_text())
+            data = json.loads(_limits_path().read_text(encoding="utf-8"))
         except (OSError, ValueError):
             data = {}
         data[provider] = {**info, "seen": time.time()}
-        _limits_path().write_text(json.dumps(data))
+        _limits_path().write_text(json.dumps(data), encoding="utf-8")
 
 
 def cli_limits():
     try:
-        return json.loads(_limits_path().read_text())
+        return json.loads(_limits_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 

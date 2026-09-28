@@ -13,7 +13,7 @@ ROOT = pathlib.Path(__file__).parent.parent
 
 
 def _allowed(f):
-    pats = json.loads((ROOT / "config.json").read_text()).get("readable_paths", [])
+    pats = json.loads((ROOT / "config.json").read_text(encoding="utf-8")).get("readable_paths", [])
     # {data} = 這個程式的資料夾；* 不跨目錄，** 才會
     return any(f.full_match(os.path.expanduser(p.replace("{data}", str(ROOT)))) for p in pats)
 

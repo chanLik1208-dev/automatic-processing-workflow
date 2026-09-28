@@ -25,7 +25,7 @@ def _memory():
                   "$o=Get-CimInstance Win32_OperatingSystem;'{0:N1} GB 可用 / 共 {1:N1} GB' -f ($o.FreePhysicalMemory/1MB),($o.TotalVisibleMemorySize/1MB)")
         return out or "?"
     try:
-        info = dict(l.split(":", 1) for l in open("/proc/meminfo"))
+        info = dict(l.split(":", 1) for l in open("/proc/meminfo", encoding="utf-8"))
         kb = lambda k: int(info[k].split()[0])
         return f"{kb('MemAvailable') / 1048576:.1f} GB 可用 / 共 {kb('MemTotal') / 1048576:.1f} GB"
     except (OSError, KeyError, ValueError):

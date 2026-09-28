@@ -22,6 +22,12 @@ HOME = Path(tempfile.mkdtemp(prefix="wf-check-"))
 os.environ["AUTOWORKFLOW_HOME"] = str(HOME)
 sys.path.insert(0, str(ROOT))
 
+for _s in (sys.stdout, sys.stderr):      # Windows 主控台不是 UTF-8 時也要印得出報告
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 import engine          # noqa: E402
 import server          # noqa: E402
 import skill_admin     # noqa: E402
@@ -175,7 +181,7 @@ def t_tool_json_parse():
 
 def t_auto_pick():
     engine.init_db()
-    c = json.loads((HOME / "config.json").read_text())
+    c = json.loads((HOME / "config.json").read_text(encoding="utf-8"))
     c["auto"] = {"order": [{"provider": "claude"}, {"provider": "lmstudio"}], "cli_max_utilization": 0.9}
     engine.save_config(c)
     engine.record_limits("claude", {"status": "allowed_warning", "utilization": 0.99, "rateLimitType": "five_hour",
@@ -198,7 +204,7 @@ def t_scheduler_lock():
     assert engine.acquire_scheduler_lock()
     code = ("import os,sys;sys.path.insert(0,r'%s');os.environ['AUTOWORKFLOW_HOME']=r'%s';import engine;"
             "print(engine.acquire_scheduler_lock())") % (ROOT, HOME)
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=30).stdout.strip()
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, encoding="utf-8", timeout=30).stdout.strip()
     assert out == "False", f"第二個行程也拿到了鎖：{out}"
     return "第二個行程拿不到排程鎖"
 
@@ -234,7 +240,7 @@ def t_local_run(model):
 
 
 def t_local_fallback(model):
-    c = json.loads((HOME / "config.json").read_text())
+    c = json.loads((HOME / "config.json").read_text(encoding="utf-8"))
     c["local_fallback"] = {"enabled": True, "provider": "lmstudio", "model": model}
     engine.save_config(c)
     wf = {"title": "檢查", "provider": "deepseek", "skills": [], "system": "只回一句話。", "task": "回覆：備用成功", "max_steps": 3}
@@ -269,14 +275,14 @@ def t_cancel(model):
 
 def t_cli(model):
     env = {**os.environ, "AUTOWORKFLOW_HOME": str(HOME)}
-    out = subprocess.run([sys.executable, str(ROOT / "app.py"), "list"], capture_output=True, text=True, env=env, timeout=60)
+    out = subprocess.run([sys.executable, str(ROOT / "app.py"), "list"], capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
     assert out.returncode == 0 and "研究助理" in out.stdout
-    bad = subprocess.run([sys.executable, str(ROOT / "app.py"), "run", "nope"], capture_output=True, text=True, env=env, timeout=60)
+    bad = subprocess.run([sys.executable, str(ROOT / "app.py"), "run", "nope"], capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
     assert bad.returncode == 2
     if model:
         r = subprocess.run([sys.executable, str(ROOT / "app.py"), "run", "tech-news", "--provider", "lmstudio", "--model", model,
                             "--json", "-i", "（檢查：只要回一句「檢查成功」，不要用任何工具）"],
-                           capture_output=True, text=True, env=env, timeout=300)
+                           capture_output=True, text=True, encoding="utf-8", env=env, timeout=300)
         d = json.loads(r.stdout)
         assert r.returncode in (0, 1) and d["status"] in ("success", "failed"), r.stdout[-300:]
         return f"list / 錯誤代碼 2 / run --json（{d['status']}）"

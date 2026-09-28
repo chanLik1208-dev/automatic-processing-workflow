@@ -52,6 +52,8 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install pyinstaller pywebview
+      - name: 發佈前檢查（設定、skill、匯出、排程鎖…；需要本地模型的項目在 CI 上會略過）
+        run: python tests/run_checks.py
       - run: python build.py
 
       - name: 啟動測試（macOS / Linux）

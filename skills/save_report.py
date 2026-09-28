@@ -15,5 +15,5 @@ REPORTS = pathlib.Path(__file__).parent.parent / "reports"
 def run(title, content):
     slug = re.sub(r"[^\w一-鿿-]+", "-", title).strip("-")[:40] or "report"
     path = REPORTS / f"{datetime.datetime.now():%Y%m%d-%H%M}-{slug}.md"
-    path.write_text(f"# {title}\n\n{content}\n")
+    path.write_text(f"# {title}\n\n{content}\n", encoding="utf-8")
     return str(path)

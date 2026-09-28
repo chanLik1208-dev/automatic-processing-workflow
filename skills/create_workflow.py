@@ -32,5 +32,5 @@ def run(name, description, provider, skills, task, schedule=None, system=""):
           "fallback": "deepseek" if provider == "lmstudio" else "lmstudio",
           "enabled": False, "schedule": schedule or None, "skills": skills,
           "system": system or "你是自動執行任務的 agent，一律用繁體中文（台灣）。", "task": task}
-    path.write_text(json.dumps(wf, ensure_ascii=False, indent=2))
+    path.write_text(json.dumps(wf, ensure_ascii=False, indent=2), encoding="utf-8")
     return f"已建立 {path}（排程先停用）"

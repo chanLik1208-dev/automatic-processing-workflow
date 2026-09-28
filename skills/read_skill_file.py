@@ -21,4 +21,4 @@ def run(skill, path):
     if base not in f.parents or not f.is_file():
         listing = sorted(str(p.relative_to(base)) for p in base.rglob("*.md") if ".git" not in p.parts)
         return f"找不到 {path}。這個 skill 裡有：{listing}"
-    return f.read_text()
+    return f.read_text(encoding="utf-8")

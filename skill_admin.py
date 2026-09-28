@@ -54,7 +54,7 @@ def list_skills():
     out = []
     for f in sorted(skills_dir().glob("*.py")):
         try:
-            tree = ast.parse(f.read_text())
+            tree = ast.parse(f.read_text(encoding="utf-8"))
             spec = next((ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
                          and any(getattr(t, "id", "") == "SPEC" for t in n.targets)), {})
         except Exception:
@@ -62,7 +62,7 @@ def list_skills():
         out.append({"name": f.stem, "kind": "tool", "description": spec.get("description", ""),
                     "source": "builtin" if f.stem in BUILTIN_PY else "imported"})
     for f in sorted(skills_dir().glob("*/SKILL.md")):
-        fm = frontmatter(f.read_text(errors="replace"))
+        fm = frontmatter(f.read_text(errors="replace", encoding="utf-8"))
         files = sum(1 for p in f.parent.rglob("*") if p.is_file() and ".git" not in p.parts)
         out.append({"name": f.parent.name, "kind": "knowledge", "title": fm.get("name", f.parent.name),
                     "description": fm.get("description", ""), "files": files,
@@ -74,7 +74,7 @@ def list_skills():
 
 def _install_folder(src: Path, name_hint=""):
     """把一個含 SKILL.md 的資料夾裝進 skills/<name>/。"""
-    fm = frontmatter((src / "SKILL.md").read_text(errors="replace"))
+    fm = frontmatter((src / "SKILL.md").read_text(errors="replace", encoding="utf-8"))
     if not fm.get("description"):
         raise ValueError(f"{name_hint or src.name} 的 SKILL.md 開頭缺少 description（格式：--- name: … description: … ---）")
     name = slug(fm.get("name") or name_hint or src.name)
@@ -157,7 +157,7 @@ def import_skill(body):
             name = slug(Path(fname).stem).replace("-", "_")
             if name in BUILTIN_PY or (skills_dir() / f"{name}.py").exists():
                 raise ValueError(f"已經有叫 {name} 的工具")
-            (skills_dir() / f"{name}.py").write_text(src)
+            (skills_dir() / f"{name}.py").write_text(src, encoding="utf-8")
             return [name]
         raise ValueError("支援 .zip、.md（SKILL.md）和 .py")
     raise ValueError("不認得的匯入方式")
@@ -188,7 +188,7 @@ def adhoc_workflow(name, provider, model=""):
         raise ValueError(f"找不到 skill {name}")
     if info["kind"] == "knowledge":
         skills = ["read_skill_file", "web_search", "fetch_url", "save_report"]
-        body = re.sub(r"^---.*?---\s*", "", (skills_dir() / name / "SKILL.md").read_text(errors="replace"), flags=re.S)
+        body = re.sub(r"^---.*?---\s*", "", (skills_dir() / name / "SKILL.md").read_text(errors="replace", encoding="utf-8"), flags=re.S)
         # 直接把 skill 的內容放進系統提示，不靠模型記得先去載入（小模型常常只說「我去載入」卻沒做）
         system = (f"你是自動執行任務的 agent。這次要嚴格照下面這個 skill（{name}）的指示做事；"
                   f"它提到的其他檔案用 read_skill_file（skill 名稱填 {name}）讀。\n\n=== skill：{name} ===\n{body[:30000]}")
@@ -244,5 +244,5 @@ def builder_save(body):
     if not fm.get("name") or not fm.get("description"):
         raise ValueError("草稿開頭要有 name 和 description")
     with tempfile.TemporaryDirectory() as d:
-        (Path(d) / "SKILL.md").write_text(text)
+        (Path(d) / "SKILL.md").write_text(text, encoding="utf-8")
         return _install_folder(Path(d))

@@ -13,7 +13,7 @@ SPEC = {
 def _cfg(path, default):
     """讀使用者設定（設定頁存的 config.json）。"""
     try:
-        cur = json.loads((pathlib.Path(__file__).parent.parent / "config.json").read_text())
+        cur = json.loads((pathlib.Path(__file__).parent.parent / "config.json").read_text(encoding="utf-8"))
         for k in path.split("."):
             cur = cur[k]
         return cur

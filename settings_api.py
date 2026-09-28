@@ -41,7 +41,7 @@ def masked():
 
 
 def save(body):
-    raw = engine.json.loads((engine.ROOT / "config.json").read_text())
+    raw = engine.json.loads((engine.ROOT / "config.json").read_text(encoding="utf-8"))
     for path, (lo, hi) in NUM.items():
         v = _get(body, path)
         if v != {}:
