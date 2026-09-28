@@ -1,10 +1,11 @@
 name: build
 
 # 推 v* 標籤：三個平台各自編譯、實際啟動測一次，然後發佈到 Releases
-# 手動觸發（Actions 頁面的 Run workflow）：只編譯，產物在該次執行的 Artifacts
+# 推到 release-check 分支、或手動觸發：只編譯和測試，產物在該次執行的 Artifacts
 on:
   push:
     tags: ["v*"]
+    branches: ["release-check"]   # 推到這個分支就編譯測試，但不發佈（發佈只在 v* 標籤）
   workflow_dispatch:
 
 jobs:
