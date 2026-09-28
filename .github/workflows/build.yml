@@ -59,7 +59,7 @@ jobs:
       - name: 啟動測試（macOS / Linux）
         if: runner.os != 'Windows'
         run: |
-          BIN=$(ls dist/AutoWorkflow-*)
+          BIN=$(cat dist/test-bin.txt)          # macOS：.app 裡的執行檔；Linux：打包前的執行檔
           "$BIN" list
           AUTOWORKFLOW_HOME=$RUNNER_TEMP/home "$BIN" --headless --port 8799 &
           for i in $(seq 1 60); do curl -sf localhost:8799/api/providers > /dev/null && break; sleep 1; done
@@ -71,7 +71,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $bin = (Get-ChildItem dist\AutoWorkflow-*.exe).FullName
+          $bin = Get-Content dist\test-bin.txt
           & $bin list
           if ($LASTEXITCODE -ne 0) { throw "list 失敗" }
           $env:AUTOWORKFLOW_HOME = "$env:RUNNER_TEMP\home"
@@ -87,7 +87,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ needs.prepare.outputs.tag }}" dist/AutoWorkflow-* --clobber
+        run: gh release upload "${{ needs.prepare.outputs.tag }}" "$(cat dist/upload.txt)" --clobber
 
   publish:
     # 四個平台都編譯、測試、上傳成功，才把正式版的草稿公開；任何一個失敗就維持草稿
