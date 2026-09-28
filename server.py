@@ -61,7 +61,8 @@ def find_browser():
 
 def convert(html, fmt):
     """把前端組好的完整 HTML 轉成 Word 或 PDF，回傳 (bytes, 副檔名)。"""
-    with tempfile.TemporaryDirectory() as d:
+    # ignore_cleanup_errors：Chrome 被關掉後，子程序可能還在寫暫存資料夾；PDF 已經讀出來了，清不乾淨不能讓匯出失敗
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         src = pathlib.Path(d) / "report.html"
         src.write_text(html, encoding="utf-8")
         out = pathlib.Path(d) / f"report.{fmt}"
@@ -83,8 +84,9 @@ def convert(html, fmt):
         if not browser:
             raise RuntimeError("找不到 Chrome / Edge / Chromium，沒辦法轉 PDF；可以改用「網頁」匯出再列印成 PDF")
         # Chrome headless 寫完 PDF 常常不會自己結束，所以等檔案寫好、大小穩定就直接關掉它
+        profile = tempfile.mkdtemp(prefix="wf-chrome-")          # 瀏覽器設定檔另外放，事後盡量清掉
         p = subprocess.Popen([browser, "--headless=new", "--disable-gpu", "--no-pdf-header-footer",
-                              f"--user-data-dir={d}/profile", f"--print-to-pdf={out}", src.as_uri()],
+                              f"--user-data-dir={profile}", f"--print-to-pdf={out}", src.as_uri()],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             last, deadline = -1, time.time() + 60
@@ -98,10 +100,12 @@ def convert(html, fmt):
                 time.sleep(0.5)
             else:
                 raise RuntimeError("PDF 轉換逾時")
+            data = out.read_bytes()
         finally:
             p.kill()
             p.wait()
-        return out.read_bytes(), "pdf"
+            shutil.rmtree(profile, ignore_errors=True)
+        return data, "pdf"
 
 
 class Api:
