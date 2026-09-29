@@ -83,6 +83,24 @@ jobs:
           if ($w.Count -ne 3) { throw "預設工作流數量不對：$($w.Count)" }
           Stop-Process $p.Id
 
+      - name: 介面自我測試（真的開出 Qt 介面，離屏、不需要螢幕；存截圖）
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-cjk libegl1 libxkbcommon0 > /dev/null   # 中文字型只是讓截圖看得懂
+          fi
+          AUTOWORKFLOW_HOME="$RUNNER_TEMP/ui-home" "$(cat dist/test-bin.txt)" --self-test-ui "$RUNNER_TEMP/ui"
+          cd "$RUNNER_TEMP/ui" && for f in *.png; do mv "$f" "ui-${{ matrix.os }}-$f"; done && ls
+
+      - name: 截圖放進測試草稿（正式版不放）
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.prepare.outputs.tag }}" "$RUNNER_TEMP"/ui/*.png --clobber
+
       - name: 上傳到 Release
         shell: bash
         env:

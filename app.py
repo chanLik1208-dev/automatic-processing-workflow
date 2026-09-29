@@ -183,6 +183,7 @@ def main():
     ap.add_argument("--webview", action="store_true", help="用 WebView 介面，而不是 Qt 原生介面")
     ap.add_argument("--no-web", action="store_true", help="搭配 --headless：連 API / 監控頁都不開，只跑排程")
     ap.add_argument("--no-browser", action="store_true", help=argparse.SUPPRESS)   # 舊參數，等同 --headless
+    ap.add_argument("--self-test-ui", metavar="資料夾", help=argparse.SUPPRESS)       # 發佈前檢查：開出介面、存截圖
     sub = ap.add_subparsers(dest="cmd")
     r = sub.add_parser("run", help="在終端機跑一次工作流或 skill")
     r.add_argument("workflow", nargs="?")
@@ -202,6 +203,9 @@ def main():
         return cmd_run(args)
     if args.cmd == "list":
         return cmd_list(args)
+    if args.self_test_ui:
+        import qt_app
+        return qt_app.self_test(args.self_test_ui)
     if args.headless or args.browser:
         return cmd_serve(args)
     return cmd_native(args)

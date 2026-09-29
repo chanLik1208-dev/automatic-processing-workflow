@@ -1769,3 +1769,67 @@ def run():
 
 if __name__ == "__main__":
     sys.exit(run())
+
+
+def self_test(outdir):
+    """發佈前檢查用：真的開出主視窗，切過每個分頁、打開編輯表單，確認都有資料、沒有例外，並存下截圖。
+    CI 用 QT_QPA_PLATFORM=offscreen 跑，不需要螢幕。成功回傳 0。"""
+    import os
+    import threading
+    import traceback
+    os.makedirs(outdir, exist_ok=True)
+    errors = []
+    sys.excepthook = lambda *e: errors.append("".join(traceback.format_exception(*e)))   # 畫面裡的例外也要算失敗
+    engine.init_db()
+    threading.Thread(target=engine.scheduler_loop, daemon=True).start()
+    app = QApplication.instance() or QApplication(sys.argv)
+    w = MainWindow()
+    w.resize(1320, 880)
+    w.show()
+    checks = {}
+    shots = []
+
+    def shot(name):
+        path = os.path.join(outdir, f"{name}.png")
+        w.grab().save(path)
+        shots.append(path)
+
+    def step1():
+        checks["摘要有載入"] = "讀取中" not in w.summary.text() and "今天跑了" in w.summary.text()
+        checks["工作流選單有項目"] = w.wf_tab.combo.count() >= 4
+        checks["開始使用有顯示"] = "開始使用" in w.wf_tab.view.toPlainText()
+        shot("1-workflows")
+        w.tabs.setCurrentIndex(1)
+        QTimer.singleShot(1500, step2)
+
+    def step2():
+        checks["skill 清單有項目"] = w.skills_tab.list.count() >= 10
+        shot("2-skills")
+        w.tabs.setCurrentIndex(2)
+        QTimer.singleShot(1800, step3)
+
+    def step3():
+        checks["設定頁有建好"] = bool(w.settings_tab.prov_rows) and bool(w.settings_tab.fields)
+        shot("3-settings")
+        w.tabs.setCurrentIndex(0)
+        d = EditorDialog(w, None)
+        d.resize(760, 820)
+        d.show()
+        QTimer.singleShot(500, lambda: step4(d))
+
+    def step4(d):
+        checks["編輯表單有模型選項"] = d.provider.count() >= 2 and len(d.skill_boxes) >= 10
+        d.grab().save(os.path.join(outdir, "4-editor.png"))
+        d.close()
+        app.quit()
+
+    QTimer.singleShot(3000, step1)
+    QTimer.singleShot(60000, app.quit)                   # 保險：卡住也不能讓 CI 一直等
+    app.exec()
+    bad = [k for k, ok in checks.items() if not ok]
+    for k, ok in checks.items():
+        print(f"{'✓' if ok else '✕'} {k}")
+    for e in errors:
+        print("介面例外：\n" + e)
+    print(f"截圖：{len(shots) + 1} 張，在 {outdir}")
+    return 1 if bad or errors or len(checks) < 6 else 0
