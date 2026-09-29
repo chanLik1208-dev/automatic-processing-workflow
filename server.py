@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlparse
 import engine
 import settings_api
 import skill_admin
+import updater
 
 
 def workflows_view():
@@ -136,6 +137,8 @@ class Api:
         if u.path == "/api/usage":
             week = time.time() - 7 * 86400
             return self.send({"today": engine.usage(), "week": engine.usage(since=week), "cli_limits": engine.cli_limits()})
+        if u.path == "/api/update":
+            return self.send(updater.status())
         if u.path == "/api/instance":
             return self.send({"data_dir": str(engine.ROOT.resolve())})
         if u.path == "/api/settings":
@@ -180,6 +183,20 @@ class Api:
                 "Content-Type": {"docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                                  "doc": "application/msword", "pdf": "application/pdf"}[ext],
                 "Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(f'{base}.{ext}')}"})
+        if parts[:2] == ["api", "update"]:
+            try:
+                if parts == ["api", "update", "check"]:
+                    return self.send(updater.check())
+                if parts == ["api", "update", "download"]:
+                    return self.send(updater.stage())
+                if parts == ["api", "update", "restart"]:
+                    # 換上新版並重新開啟：先回應，再讓程式結束（小腳本會等它結束才替換）
+                    updater.apply_and_restart(sys.argv[1:])
+                    threading.Timer(0.8, lambda: os._exit(0)).start()
+                    return self.send({"ok": True, "restarting": True})
+            except Exception as e:
+                return self.send({"error": str(e)}, 400)
+            return self.send({"error": "not found"}, 404)
         if parts == ["api", "settings"]:
             try:
                 return self.send({"ok": True, "settings": settings_api.save(body)})

@@ -120,6 +120,8 @@ SETTING_DEFAULTS = {
              "cli_max_utilization": 0.9},
     # 本地備用：跟自動模式、工作流自己的備援都分開；其他全部失敗時最後落到這裡
     "local_fallback": {"enabled": False, "provider": "lmstudio", "model": ""},
+    # 更新：每天自動檢查；自動安裝預設關（開了就背景下載，下次啟動換上）
+    "update": {"auto_check": True, "auto_install": False, "github_token": ""},
 }
 
 

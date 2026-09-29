@@ -237,6 +237,23 @@ def t_search():
     return "有結果（" + r.rsplit("搜尋引擎：", 1)[-1].rstrip("）") + "）"
 
 
+def t_update():
+    import updater
+    assert updater._ver("0.10.0") > updater._ver("0.9.9") > updater._ver("0.2.1"), "版本比較錯誤"
+    assert updater.asset_name().startswith("AutoWorkflow-") and updater.asset_name().endswith((".dmg", ".exe", ".tar.gz"))
+    old = updater.VERSION
+    try:
+        updater.VERSION = "0.0.1"                       # 假裝很舊，GitHub 上一定有比較新的
+        st = updater.check()
+        if st["error"] and ("限制" in st["error"] or "失敗" in st["error"]):
+            raise Skip(st["error"])
+        assert st["update_available"] and st["latest"]["asset"], st
+        assert st["latest"]["asset"]["name"] == updater.asset_name()
+    finally:
+        updater.VERSION = old
+    return f"查得到 {st['latest']['version']}，也有這個平台的安裝檔"
+
+
 def lm_ready(model):
     if not model:
         return "沒給 --model"
@@ -338,6 +355,7 @@ def main():
     check("抓網頁", t_fetch, skip=net)
     check("搜尋", t_search, skip=net)
     check("匯出 Word / PDF", t_export)
+    check("檢查更新", t_update, skip=net)
     check("本地模型執行", lambda: t_local_run(a.model), skip=lm)
     check("本地備用", lambda: t_local_fallback(a.model), skip=lm)
     check("停止", lambda: t_cancel(a.model), skip=lm)

@@ -286,6 +286,7 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 <div class="wrap">
   <header>
     <h1>自動化工作流</h1>
+    <div id="update-bar" hidden style="background:var(--accent);color:var(--accent-ink);padding:6px 12px;border-radius:8px;margin:0 0 12px"></div>
     <div class="sumrow"><div class="summary" id="summary">讀取中…</div>
       <div class="dd"><button class="ghost" data-toggle="model-menu" id="model-btn" style="padding:4px 10px;font-size:13px">模型狀態 ▾</button>
         <div class="menu right" id="model-menu" style="min-width:320px;max-width:420px"></div></div></div>
@@ -1339,10 +1340,16 @@ async function loadSettings() {
     <div class="panel st-sec"><h3>通知與匯出</h3>
       ${sw("桌面通知", "notify.enabled", "關掉後，工作流的「跳通知」會直接略過。")}
       ${txt("PDF 用的瀏覽器", "export.browser_path", "留空會自動找 Chrome / Edge / Chromium。", "例如 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome")}</div>
+    <div class="panel st-sec"><h3>更新</h3><div class="muted">從 GitHub Releases 取得新版本。</div>
+      <div class="row"><label>目前版本</label><div id="up-status" class="muted">讀取中…</div></div>
+      ${sw("自動檢查更新", "update.auto_check", "每天在背景檢查一次，有新版會在最上面提示。")}
+      ${sw("自動安裝", "update.auto_install", "有新版就先在背景下載好，下次開啟時自動換上。")}
+      <div class="row2"><button type="button" class="ghost" data-up-check>檢查更新</button><button type="button" data-up-install disabled>下載並更新</button></div></div>
     <div class="panel st-sec"><h3>讀檔白名單</h3><div class="muted">「讀取檔案」只能讀這些路徑。一行一個；<code>*</code> 不跨資料夾、<code>**</code> 會往下找；<code>{data}</code> 是這個程式的資料夾。</div>
       <textarea id="st-paths" rows="4" style="width:100%;font:13px ui-monospace,Menlo,monospace">${esc((s.readable_paths || []).join("\n"))}</textarea></div>
     <div class="st-save"><button type="submit" id="st-save">儲存設定</button><span id="st-msg" class="muted"></span></div>`;
   [...document.querySelectorAll("#st-form .st-sec")].forEach((el, i) => enterEl(el, 40 + i * 40));
+  showUpdate(await j("/api/update"));
 }
 
 function collectSettings() {
@@ -1638,6 +1645,40 @@ document.addEventListener("keydown", e => {
 document.addEventListener("input", e => { if (e.target.id === "b-draft") { builderDraft = e.target.value; saveBuilder(); const b = $("[data-b-save]"); if (b) b.disabled = !builderDraft.trim(); } });
 const b64 = f => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = no; r.readAsDataURL(f); });
 
+// ── 更新 ───────────────────────────────────────────
+let UPD = {};
+function showUpdate(st) {
+  UPD = st || {};
+  const el = $("#up-status"), btn = document.querySelector("[data-up-install]");
+  if (el) {
+    el.innerHTML = esc(UPD.current || "") + "　" + (UPD.checking ? "檢查中…" : UPD.progress != null ? `下載中 ${UPD.progress}%`
+      : UPD.error ? `<span class="bad-text">${esc(UPD.error)}</span>`
+      : UPD.update_available ? `→ 有新版本 <b>${esc(UPD.latest.version)}</b>${UPD.can_install ? "" : "（" + esc(UPD.why_cannot || "這個平台沒有安裝檔") + "）"}`
+      : UPD.checked ? `已經是最新版本` : "");
+  }
+  if (btn) btn.disabled = !UPD.can_install;
+  const bar = $("#update-bar");
+  if (UPD.update_available) {
+    bar.innerHTML = `有新版本 <b>${esc(UPD.latest.version)}</b>（目前 ${esc(UPD.current)}）　` +
+      (UPD.can_install ? `<a href="#" data-up-install>立即更新</a>　` : "") + `<a href="${esc(UPD.latest.url || "#")}" target="_blank" rel="noopener">看更新內容</a>`;
+    if (bar.hidden) { bar.hidden = false; enterEl(bar); }
+  } else bar.hidden = true;
+}
+async function startUpdate() {
+  if (!confirm(`下載並安裝 ${UPD.latest?.version}？下載完會請你重新啟動來換上新版本。`)) return;
+  const poll = setInterval(async () => showUpdate(await j("/api/update")), 500);
+  const r = await post("/api/update/download", {});
+  clearInterval(poll); showUpdate(await j("/api/update"));
+  if (!r.ok) { toast(r.error || "更新失敗", 5000); return; }
+  if (confirm("新版本已經下載好。現在重新啟動來換上新版本？（正在執行的工作流會被中斷）")) {
+    await post("/api/update/restart", {}); toast("正在重新啟動…", 0);
+  }
+}
+document.addEventListener("click", async e => {
+  if (e.target.closest("[data-up-check]")) { e.preventDefault(); $("#up-status").textContent = "檢查中…"; showUpdate(await post("/api/update/check", {})); }
+  if (e.target.closest("[data-up-install]")) { e.preventDefault(); startUpdate(); }
+});
+
 // ── 輪詢 ───────────────────────────────────────────
 let busy = false, again = false;
 async function tick() {
@@ -1671,6 +1712,8 @@ async function start() {
   await tick(); liveLoop();
   setInterval(tick, 3000);
   setInterval(async () => { try { [PROV, USAGE] = await Promise.all([j("/api/providers"), j("/api/usage")]); } catch {} }, 30000);
+  setTimeout(async () => { try { showUpdate(await j("/api/update")); } catch {} }, 4000);
+  setInterval(async () => { try { showUpdate(await j("/api/update")); } catch {} }, 60000);
 }
 // 原生視窗要等 pywebview 把橋接接好才能開始；瀏覽器直接開始
 if (window.pywebview?.api?.request || !window.__NATIVE__) start();

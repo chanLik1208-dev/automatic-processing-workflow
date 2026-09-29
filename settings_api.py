@@ -13,7 +13,7 @@ NUM = {  # 路徑: (最小, 最大)
     "limits.max_steps": (1, 60), "limits.fail_streak": (1, 20), "limits.stall_seconds": (10, 3600),
     "search.limit": (1, 15), "fetch.max_chars": (1000, 100000),
 }
-BOOL = ["lmstudio_guard.nan_watchdog", "lmstudio_guard.raw_capture", "notify.enabled"]
+BOOL = ["lmstudio_guard.nan_watchdog", "lmstudio_guard.raw_capture", "notify.enabled", "update.auto_check", "update.auto_install"]
 TEXT = {"language": 40, "search.region": 20, "export.browser_path": 500}
 
 
@@ -32,6 +32,8 @@ def _set(d, path, v):
 
 def masked():
     c = engine.load_config()
+    tok = (c.get("update") or {}).pop("github_token", "")
+    c.setdefault("update", {})["token_hint"] = f"已設定（末四碼 {tok[-4:]}）" if tok else ""
     for name, p in c.get("providers", {}).items():
         key = p.pop("api_key", "")
         p["key_hint"] = f"已設定（末四碼 {key[-4:]}）" if key else ""
@@ -82,6 +84,11 @@ def save(body):
             raise ValueError("訂閱額度門檻要在 10%–100% 之間")
         raw["auto"] = {"order": order, "cli_max_utilization": thr}
 
+    up = body.get("update") or {}
+    if up.get("new_token"):
+        raw.setdefault("update", {})["github_token"] = str(up["new_token"]).strip()[:200]
+    elif up.get("clear_token"):
+        raw.setdefault("update", {}).pop("github_token", None)
     if "local_fallback" in body:
         lf = body["local_fallback"] or {}
         raw["local_fallback"] = {"enabled": bool(lf.get("enabled")), "provider": str(lf.get("provider") or "lmstudio"),

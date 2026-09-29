@@ -245,7 +245,7 @@ class TimeBar(QWidget):
         total = sum(s[1] for s in segs) or 1
         self.setToolTip("\n".join(f"{s[2]}：{dur(s[1]) or '不到 1 秒'}" for s in segs))
         self._total = total
-        self.update()
+        self.upd()
 
     def paintEvent(self, _):
         if not self.segs:
@@ -1375,6 +1375,26 @@ class SettingsTab(QScrollArea):
         f = self.section(v, "通知與匯出")
         self.sw(f, "桌面通知", "notify.enabled", "關掉後，工作流的「跳通知」會直接略過。")
         self.txt(f, "PDF 用的瀏覽器", "export.browser_path", "留空會自動找 Chrome / Edge / Chromium。")
+        f = self.section(v, "更新", "從 GitHub Releases 取得新版本。")
+        self.up_status = label("", "muted")
+        f.addRow("目前版本", self.up_status)
+        self.sw(f, "自動檢查更新", "update.auto_check", "每天在背景檢查一次，有新版會在最上面提示。")
+        self.sw(f, "自動安裝", "update.auto_install", "有新版就先在背景下載好，下次開啟時自動換上。")
+        self.up_token = QLineEdit()
+        self.up_token.setEchoMode(QLineEdit.Password)
+        self.up_token.setPlaceholderText(((s.get("update") or {}).get("token_hint") or "不需要（公開 repo）") + "；私人 repo 才要填")
+        f.addRow("GitHub token", self.up_token)
+        ub = QHBoxLayout()
+        self.up_check = QPushButton("檢查更新")
+        self.up_check.clicked.connect(lambda: (self.up_status.setText("檢查中…"),
+                                               self.b.post("/api/update/check", {}, lambda r: self.win._update_status(r))))
+        self.up_install = QPushButton("下載並更新")
+        self.up_install.clicked.connect(self.win.start_update)
+        ub.addWidget(self.up_check)
+        ub.addWidget(self.up_install)
+        ub.addStretch()
+        f.addRow("", ub)
+        self.show_update(getattr(self.win, "upd", {}))
         f = self.section(v, "讀檔白名單", "「讀取檔案」只能讀這些路徑。一行一個；* 不跨資料夾、** 會往下找；{data} 是這個程式的資料夾。")
         self.paths = QPlainTextEdit("\n".join(s.get("readable_paths") or []))
         self.paths.setMaximumHeight(100)
@@ -1389,6 +1409,32 @@ class SettingsTab(QScrollArea):
         v.addLayout(row)
         v.addStretch()
         self.setWidget(page)
+
+    def show_update(self, st):
+        if not getattr(self, "up_status", None):
+            return
+        try:
+            self.up_status.isVisible()
+        except RuntimeError:                              # 設定頁重建過，舊的元件已經刪掉
+            return
+        if not st:
+            return
+        cur = st.get("current", "")
+        if st.get("checking"):
+            txt = f"{cur}　檢查中…"
+        elif st.get("progress") is not None:
+            txt = f"{cur}　下載中 {st['progress']}%"
+        elif st.get("error"):
+            txt = f"{cur}　<span style='color:{C('bad')}'>{esc(st['error'])}</span>"
+        elif st.get("update_available"):
+            txt = f"{cur}　→ 有新版本 <b>{esc(st['latest']['version'])}</b>" + ("" if st.get("can_install") else f"（{esc(st.get('why_cannot') or '這個平台沒有安裝檔')}）")
+        elif st.get("checked"):
+            txt = f"{cur}　已經是最新版本（{when(st['checked'])}檢查）"
+        else:
+            txt = cur
+        self.up_status.setText(txt)
+        self.up_status.setTextFormat(Qt.RichText)
+        self.up_install.setEnabled(bool(st.get("can_install")))
 
     def add_provider(self, n, p):
         box = QFrame()
@@ -1515,6 +1561,8 @@ class SettingsTab(QScrollArea):
                     p["clear_key"] = True
             out["providers"][n] = p
         out["readable_paths"] = self.paths.toPlainText().splitlines()
+        if self.up_token.text().strip():
+            out.setdefault("update", {})["new_token"] = self.up_token.text().strip()
         out["local_fallback"] = {"enabled": self.lf_on.isChecked(), "provider": self.lf_p.currentData(), "model": self.lf_m.text()}
         out["auto"] = {"cli_max_utilization": self.thr.value() / 100,
                        "order": [{"provider": r["p"].currentData(), "model": r["m"].text(), "max_daily_tokens": r["tok"].value(),
@@ -1562,6 +1610,12 @@ class MainWindow(QMainWindow):
         v.addLayout(head)
         self.summary = label("讀取中…")
         v.addWidget(self.summary)
+        self.update_bar = QLabel()
+        self.update_bar.setTextFormat(Qt.RichText)
+        self.update_bar.setStyleSheet(f"background:{C('model')};color:#1e1e3c;padding:6px 12px;border-radius:6px")
+        self.update_bar.linkActivated.connect(self.on_update_link)
+        self.update_bar.hide()
+        v.addWidget(self.update_bar)
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.wf_tab, self.skills_tab, self.settings_tab = WorkflowTab(self), SkillsTab(self), SettingsTab(self)
@@ -1590,6 +1644,9 @@ class MainWindow(QMainWindow):
         self.live_timer = QTimer(self, interval=700, timeout=self.poll_live)
         self.live_timer.start()
         QTimer(self, interval=30000, timeout=self.load_providers).start()
+        self.upd = {}
+        QTimer(self, interval=60000, timeout=self.load_update).start()
+        QTimer.singleShot(4000, self.load_update)
 
     # 名稱
     def prov_label(self, n):
@@ -1689,6 +1746,47 @@ class MainWindow(QMainWindow):
             self.skills_tab.load()
         elif i == 2:
             self.settings_tab.load()
+
+    # 更新
+    def load_update(self):
+        self.backend.get("/api/update", self._update_status)
+
+    def _update_status(self, st):
+        self.upd = st or {}
+        if self.upd.get("update_available"):
+            v = self.upd["latest"]["version"]
+            act = "<a href='install' style='color:#1e1e3c'>立即更新</a>　" if self.upd.get("can_install") else ""
+            self.update_bar.setText(f"有新版本 <b>{esc(v)}</b>（目前 {esc(self.upd['current'])}）　{act}"
+                                    f"<a href='notes' style='color:#1e1e3c'>看更新內容</a>")
+            if not self.update_bar.isVisible():
+                self.update_bar.show()
+                slide_in(self.update_bar)
+        else:
+            self.update_bar.hide()
+        self.settings_tab.show_update(self.upd)
+
+    def on_update_link(self, link):
+        if link == "notes":
+            webbrowser.open((self.upd.get("latest") or {}).get("url") or "")
+        else:
+            self.start_update()
+
+    def start_update(self):
+        v = (self.upd.get("latest") or {}).get("version", "")
+        if QMessageBox.question(self, "更新", f"下載並安裝 {v}？\n下載完會請你重新啟動來換上新版本。") != QMessageBox.Yes:
+            return
+        self.toast("下載新版本中…", 4000)
+        prog = QTimer(self, interval=500, timeout=self.load_update)
+        prog.start()
+        self.backend.post("/api/update/download", {}, lambda r: (prog.stop(), self._downloaded(r)))
+
+    def _downloaded(self, r):
+        self.load_update()
+        if r.get("error"):
+            QMessageBox.warning(self, "更新失敗", r["error"])
+            return
+        if QMessageBox.question(self, "更新", "新版本已經下載好。現在重新啟動來換上新版本？\n（正在執行的工作流會被中斷）") == QMessageBox.Yes:
+            self.backend.post("/api/update/restart", {})
 
     # 其他
     def open_editor(self, w, pre=None):

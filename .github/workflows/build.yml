@@ -27,6 +27,10 @@ jobs:
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF_NAME}"
+            # 程式裡的版本號要跟標籤一致，否則更新檢查會一直以為有新版
+            curl -sf -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
+              "https://api.github.com/repos/$GH_REPO/contents/version.py?ref=$GITHUB_SHA" | grep -q "VERSION = \"${TAG#v}\"" \
+              || { echo "version.py 的版本跟標籤 $TAG 不一致"; exit 1; }
             gh release create "$TAG" --draft --title "$TAG" --generate-notes --verify-tag
           else
             TAG="check-${GITHUB_RUN_NUMBER}"

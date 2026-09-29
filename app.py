@@ -10,6 +10,7 @@
   AutoWorkflow run --skill <skill> --input 文字
                                      用某個 skill 跑一次（同「試用」）
   AutoWorkflow list                  列出工作流和 skill
+  AutoWorkflow update [--check]      檢查更新；不加 --check 就下載並換上新版本
 """
 import argparse
 import json
@@ -27,6 +28,7 @@ import urllib.error, urllib.parse, xml.etree.ElementTree  # noqa: F401,E401
 import engine
 import server
 import skill_admin
+import updater
 
 # Windows 主控台預設不是 UTF-8（例如 cp1252），印中文會直接當掉；統一改成 UTF-8，印不出來的字元用替代符號
 for _s in (sys.stdout, sys.stderr):
@@ -161,6 +163,27 @@ def cmd_run(args):
     return 0 if r["status"] == "success" else 1
 
 
+def cmd_update(args):
+    st = updater.check()
+    if st["error"]:
+        print(st["error"], file=sys.stderr)
+        return 1
+    if not st["update_available"]:
+        print(f"已經是最新版本（{st['current']}）")
+        return 0
+    print(f"有新版本：{st['latest']['version']}（目前 {st['current']}）")
+    if args.check:
+        return 0
+    if not st["can_install"]:
+        print(st["why_cannot"] or "這個平台沒有對應的安裝檔", file=sys.stderr)
+        return 1
+    print("下載中…")
+    updater.stage()
+    updater.apply_and_restart()
+    print("已下載，關閉這個程式後會自動換上新版本並重新開啟。")
+    return 0
+
+
 def cmd_list(args):
     engine.seed_data_dir()
     print("工作流：")
@@ -194,6 +217,8 @@ def main():
     r.add_argument("--json", action="store_true", help="結果用 JSON 輸出（方便接其他程式）")
     r.add_argument("--quiet", "-q", action="store_true", help="不印進度，只印結果")
     sub.add_parser("list", help="列出工作流和 skill")
+    up = sub.add_parser("update", help="檢查或安裝更新")
+    up.add_argument("--check", action="store_true", help="只檢查，不安裝")
     args = ap.parse_args()
     args.headless = args.headless or args.no_browser
     engine.seed_data_dir()
@@ -203,6 +228,12 @@ def main():
         return cmd_run(args)
     if args.cmd == "list":
         return cmd_list(args)
+    if args.cmd == "update":
+        return cmd_update(args)
+    # 介面 / headless：上次背景已經下載好新版就先換上（會自動重新開啟），並開始每天檢查
+    if not args.self_test_ui and updater.apply_pending_on_start():
+        return 0
+    threading.Thread(target=updater.auto_loop, daemon=True).start()
     if args.self_test_ui:
         import qt_app
         return qt_app.self_test(args.self_test_ui)
