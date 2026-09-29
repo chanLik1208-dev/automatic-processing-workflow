@@ -212,12 +212,15 @@ class TabUnderline(QObject):
     def __init__(self, tabs, curve):
         super().__init__(tabs)
         self.tabs, self.f, self.ms = tabs, curve[0], curve[1]
+        self.base = QWidget(tabs)                              # .tabs 的 border-bottom：整條細線，底線壓在上面
+        self.base.setStyleSheet(f"background:{T['line']};")
         self.bar = QWidget(tabs)
         self.bar.setStyleSheet(f"background:{T['run']}; border-radius:1px;")
         self.bar.setFixedHeight(2)
         self.anim = None
         tabs.currentChanged.connect(lambda i: self.move(True))
         tabs.tabBar().installEventFilter(self)
+        tabs.installEventFilter(self)
         self.move(False)
 
     def target(self):
@@ -227,6 +230,8 @@ class TabUnderline(QObject):
 
     def move(self, animate):
         end = self.target()
+        self.base.setGeometry(0, end.y() + 1, self.tabs.width(), 1)
+        self.base.show()
         self.bar.raise_()
         if not animate or not self.bar.isVisible():
             self.bar.setGeometry(end)

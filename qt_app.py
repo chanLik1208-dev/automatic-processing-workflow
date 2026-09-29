@@ -1623,6 +1623,7 @@ class MainWindow(QMainWindow):
         v.addWidget(self.update_bar)
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
+        self.tabs.tabBar().setDrawBase(False)            # 分隔線由 pane 的上框畫在分頁下面（跟網頁版一樣）
         self.wf_tab, self.skills_tab, self.settings_tab = WorkflowTab(self), SkillsTab(self), SettingsTab(self)
         self.tabs.addTab(self.wf_tab, "工作流")
         self.tabs.addTab(self.skills_tab, "Skills")

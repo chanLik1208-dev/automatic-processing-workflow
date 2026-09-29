@@ -1,7 +1,7 @@
 """進入點。
 
-  AutoWorkflow                       開原生介面（Qt；不開 port、不需要瀏覽器）
-  AutoWorkflow --webview             改用 WebView 介面（舊版介面，同樣不開 port）
+  AutoWorkflow                       開 WebView 視窗（不開 port、不需要瀏覽器）
+  AutoWorkflow --qt                  改用 Qt 原生介面（同樣不開 port）
   AutoWorkflow --browser             改用瀏覽器開（會在本機開一個 Web 伺服器）
   AutoWorkflow --headless            沒有介面：只在背景跑排程，並開 Web 伺服器提供 API / 監控頁（伺服器、開機自動啟動用）
   AutoWorkflow --headless --no-web   連 API 都不開，只跑排程
@@ -53,21 +53,17 @@ def port_free(host, port):
 
 
 def cmd_native(args):
-    # 預設用 Qt 原生介面；開不了（例如 Linux 缺少圖形函式庫）就退回 WebView，再不行就用瀏覽器
-    if not args.webview:
-        try:
-            import qt_app
+    # 預設用 WebView；加 --qt 用 Qt 介面。開不了就換另一個，兩個都不行才用瀏覽器
+    order = ["qt", "webview"] if args.qt else ["webview", "qt"]
+    for ui in order:
+        try:                                           # 只有「載入不了」才換下一個；跑起來之後的錯誤不算
+            mod = __import__("qt_app" if ui == "qt" else "native")
         except Exception as e:
-            print(f"開不了原生介面（{e}），改用 WebView。")
-        else:
-            return qt_app.run()
-    try:
-        import native
-    except Exception as e:
-        print(f"這台電腦開不了原生視窗（{e}），改用瀏覽器開啟。")
-        return cmd_serve(args)
-    native.run()
-    return 0
+            print(f"開不了{'Qt' if ui == 'qt' else 'WebView'} 介面（{e}），換下一個。")
+            continue
+        return mod.run() or 0
+    print("這台電腦開不了視窗，改用瀏覽器開啟。")
+    return cmd_serve(args)
 
 
 def cmd_serve(args):
@@ -203,7 +199,8 @@ def main():
     ap.add_argument("--port", type=int, help="指定 port（預設用設定裡的，被佔用就往後找）")
     ap.add_argument("--headless", action="store_true", help="沒有介面，只在背景跑排程和 API")
     ap.add_argument("--browser", action="store_true", help="用瀏覽器開，而不是原生視窗")
-    ap.add_argument("--webview", action="store_true", help="用 WebView 介面，而不是 Qt 原生介面")
+    ap.add_argument("--qt", action="store_true", help="用 Qt 原生介面，而不是 WebView")
+    ap.add_argument("--webview", action="store_true", help=argparse.SUPPRESS)          # 舊參數：現在本來就是預設
     ap.add_argument("--no-web", action="store_true", help="搭配 --headless：連 API / 監控頁都不開，只跑排程")
     ap.add_argument("--no-browser", action="store_true", help=argparse.SUPPRESS)   # 舊參數，等同 --headless
     ap.add_argument("--self-test-ui", metavar="資料夾", help=argparse.SUPPRESS)       # 發佈前檢查：開出介面、存截圖

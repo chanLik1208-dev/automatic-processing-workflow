@@ -13,7 +13,7 @@
 | Linux | `AutoWorkflow-linux-x64.tar.gz` | `tar xzf AutoWorkflow-linux-x64.tar.gz && ./AutoWorkflow-linux-x64/AutoWorkflow` |
 | Windows | `AutoWorkflow-windows-x64.exe` | 直接執行 |
 
-執行後會開原生介面（Qt，用系統自己的控制項，不開任何 port）。想用舊的 WebView 介面加 `--webview`。執行檔沒有程式碼簽章，第一次開要多一步：
+執行後會開 WebView 視窗（不開任何 port）。想用 Qt 原生介面加 `--qt`。執行檔沒有程式碼簽章，第一次開要多一步：
 
 - **macOS**：打開 dmg 後雙擊「安裝 AutoWorkflow.command」，它會把 app 複製到「應用程式」並移除 macOS 對下載檔加的
   隔離標記，之後直接雙擊 app 就能開。這個安裝檔本身第一次會被擋一次：到「系統設定 → 隱私權與安全性」按「仍要開啟」。
