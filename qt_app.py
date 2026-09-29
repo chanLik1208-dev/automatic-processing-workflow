@@ -230,8 +230,34 @@ class TimeBar(QWidget):
         p.end()
 
 
-DEPTH_LEVELS = {1: ("簡短", "約 200–400 字，只講結論"), 2: ("精簡", "約 500–800 字，重點條列"), 3: ("標準", "照工作流原本的寫法"),
-                4: ("深入", "約 1500–3000 字，交叉比對"), 5: ("詳盡", "約 3000–6000 字的完整報告")}   # 開啟後會用 /api/depth 覆蓋
+DEPTH_LEVELS = {1: ("low", "約 200–400 字，只講結論"), 2: ("medium", "約 500–800 字，重點條列"), 3: ("high", "預設：照工作流原本的寫法"),
+                4: ("xhigh", "約 1500–3000 字，交叉比對"), 5: ("max", "約 3000–6000 字的完整報告")}   # 開啟後會用 /api/depth 覆蓋
+FX_LOW = "#8fa3b8"
+
+
+class DepthFx(QObject):
+    """極端值特效：max 讓顏色沿彩虹循環（跟網頁版的流動彩虹同一組顏色），low 是安靜的冷色。
+    apply(顏色或 None) 由使用的元件決定要塗在哪裡；計時器只在 max 而且看得到的時候跑。"""
+
+    def __init__(self, owner, apply):
+        super().__init__(owner)
+        self.owner, self.apply, self.level, self.t = owner, apply, 3, 0.0
+        self.timer = QTimer(self, interval=50, timeout=self._tick)
+
+    def set(self, level):
+        self.level = level
+        if level == 5:
+            self.timer.start()
+            self._tick()
+        else:
+            self.timer.stop()
+            self.apply(FX_LOW if level == 1 else None)
+
+    def _tick(self):
+        if not self.owner.isVisible():
+            return
+        self.t = (self.t + 0.02) % 1.0
+        self.apply(QColor.fromHsvF((0.0 + self.t) % 1.0, 0.45, 1.0).name())
 
 
 def short_model(mid):
@@ -282,7 +308,7 @@ def quota_text(usage, n, key=None):
 
 
 class DepthSlider(QWidget):
-    """篇幅與深度（類似 effort 的滑桿）：1 簡短 … 3 標準 … 5 詳盡。"""
+    """篇幅與深度（跟 Claude Code 的 effort 一樣的等級）：1 low … 3 high（預設）… 5 max。"""
 
     def __init__(self, value=3, show_hint=False, bare=False):
         super().__init__()
@@ -307,6 +333,9 @@ class DepthSlider(QWidget):
             h.addWidget(self.hint)
         h.addStretch()
         self.s.valueChanged.connect(self._sync)
+        # 在選單裡（bare）時名稱藏起來，特效由外面的按鈕負責
+        self.fx = None if bare else DepthFx(self, lambda c: self.name.setStyleSheet(
+            f"color:{c};font-weight:600" if c else "font-weight:600"))
         self.set(value)
 
     def set(self, v):
@@ -321,13 +350,15 @@ class DepthSlider(QWidget):
     def _sync(self):
         name, hint = DEPTH_LEVELS.get(self.s.value(), ("", ""))
         self.name.setText(name)
+        if getattr(self, "fx", None):
+            self.fx.set(self.s.value())
         self.setToolTip(hint)
         if self.hint:
             self.hint.setText(hint)
 
 
 class DepthMenuButton(QToolButton):
-    """執行列上的「篇幅 標準 ▾」：滑桿放在獨立的二級選單裡。"""
+    """執行列上的「篇幅 high ▾」：滑桿放在獨立的二級選單裡；max / low 有特效。"""
 
     def __init__(self, on_change):
         super().__init__()
@@ -361,7 +392,12 @@ class DepthMenuButton(QToolButton):
         menu.addAction(act)
         self.setMenu(menu)
         self.slider.s.valueChanged.connect(self._changed)
+        self.fx = DepthFx(self, self._paint_fx)
         self.set(3)
+
+    def _paint_fx(self, color):
+        self.setStyleSheet(f"QToolButton {{ color:{color}; font-weight:600; border-color:{color}; }}" if color else "")
+        self.slider.s.setStyleSheet(f"QSlider::sub-page:horizontal {{ background:{color}; border-radius:2px; }}" if color else "")
 
     def set(self, v):
         self.slider.set(v)
@@ -376,13 +412,14 @@ class DepthMenuButton(QToolButton):
 
     def _show(self):
         v = self.value()
+        self.fx.set(v)
         self.setText(f"篇幅 {DEPTH_LEVELS[v][0]} ▾")
         self.setToolTip(DEPTH_LEVELS[v][1])
         self.hint.setText(DEPTH_LEVELS[v][1])
         for lv, b in self.ticks.items():
             b.setText(DEPTH_LEVELS[lv][0])
-            b.setStyleSheet("border:none;padding:2px 4px;font-size:12.5px;"
-                            + (f"color:{C('ink')};font-weight:600" if lv == v else f"color:{C('muted')}"))
+            on = f"color:{FX_LOW if v == 1 else '#c89bff' if v == 5 else C('ink')};font-weight:600"
+            b.setStyleSheet("border:none;padding:2px 4px;font-size:12.5px;" + (on if lv == v else f"color:{C('muted')}"))
 
 
 def label(text="", role=None, size=None, bold=False, wrap=True):
@@ -605,6 +642,11 @@ class WorkflowTab(QWidget):
         self.act_steps = em.addAction("附上執行過程")
         self.act_steps.setCheckable(True)
         self.export_btn.setMenu(em)
+        self.del_btn = QPushButton("刪除")
+        self.del_btn.setProperty("danger", True)
+        self.del_btn.clicked.connect(self.delete_run)
+        self.del_btn.setEnabled(False)
+        rh.addWidget(self.del_btn)
         rh.addWidget(self.export_btn)
         rv.addLayout(rh)
         self.view = QTextBrowser()
@@ -743,6 +785,7 @@ class WorkflowTab(QWidget):
             self.view.setHtml("".join(parts))
             self.view.verticalScrollBar().setValue(scroll)
         self.export_btn.setEnabled(r["status"] != "running")
+        self.del_btn.setEnabled(r["status"] != "running")
         if same:
             apply()
         elif self.shown_detail is None:
@@ -752,9 +795,31 @@ class WorkflowTab(QWidget):
             motion.swap(self.view, apply)               # 換一筆：舊的先離場，新的再進場
         self.shown_detail = r["id"]
 
+    def delete_run(self):
+        """刪這一筆紀錄；它用 save_report 存的報告搬進 reports/.trash。"""
+        if not self.detail:
+            return
+        r = self.detail["run"]
+        saved = sum(1 for x in self.detail["steps"] if x["kind"] == "tool" and x["name"] == "save_report")
+        msg = f"刪除「{self.win.wf_title(r['workflow'])}」{when(r['started'])}的這筆紀錄？" + (
+            f"\n它存的 {saved} 份報告會移到 reports/.trash（還救得回來）。" if saved else "")
+        if QMessageBox.question(self, "刪除紀錄", msg) != QMessageBox.Yes:
+            return
+
+        def done(res):
+            if res and res.get("error"):
+                QMessageBox.warning(self, "刪不掉", res["error"])
+                return
+            moved = (res or {}).get("moved_reports") or []
+            self.win.toast(f"已刪除；{len(moved)} 份報告移到 reports/.trash" if moved else "已刪除這筆紀錄")
+            self.sel_run, self.shown_detail, self.detail = None, None, None
+            self.win.refresh()
+        self.b.post(f"/api/runs/{r['id']}/delete", {}, done)
+
     def show_welcome(self):
         self.detail = None
         self.export_btn.setEnabled(False)
+        self.del_btn.setEnabled(False)
         if self.sel_wf:
             self.view.setHtml(f"<p style='color:{C('muted')}'>這條工作流還沒有執行紀錄，按上面的「立即執行」試試看。</p>")
             return
@@ -1627,6 +1692,14 @@ class SettingsTab(QScrollArea):
             row["path"] = QLineEdit(p.get("path", ""))
             row["path"].setPlaceholderText(f"留空：自動在 PATH 裡找 {p.get('command', '')}")
             f.addRow("執行檔路徑", row["path"])
+            if p.get("adapter") in ("claude", "codex"):
+                row["effort"] = QComboBox()
+                for v, t in (("", "預設"), ("low", "低"), ("medium", "中"), ("high", "高"), ("xhigh", "很高")):
+                    row["effort"].addItem(t, v)
+                row["effort"].setCurrentIndex(max(0, row["effort"].findData(p.get("effort", ""))))
+                f.addRow("思考強度", row["effort"])
+                f.addRow("", label("越高想得越久、越花額度；" + ("GPT 在「預設／中」遇到簡單的問題常常完全不思考，所以看不到思考內容。"
+                                   if p.get("adapter") == "codex" else "思考內容會顯示在「現在」和過程裡。"), "muted"))
             if st.get("missing"):
                 f.addRow("", label(f"還沒安裝：{esc((st.get('install') or [''])[0])}　{esc(st.get('login', ''))}", "muted"))
         else:
@@ -1751,6 +1824,8 @@ class SettingsTab(QScrollArea):
             for k in ("path", "base_url"):
                 if k in row:
                     p[k] = row[k].text()
+            if "effort" in row:
+                p["effort"] = row["effort"].currentData()
             if "needs_key" in row:
                 p["needs_key"] = row["needs_key"].isChecked()
                 if row["new_key"].text().strip():

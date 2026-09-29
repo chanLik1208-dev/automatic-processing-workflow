@@ -212,7 +212,7 @@ def main():
     r.add_argument("--provider", help="這次改用哪個模型來源（例如 claude、lmstudio）")
     r.add_argument("--model", help="這次改用哪個模型")
     r.add_argument("--depth", type=int, choices=range(1, 6), metavar="1-5",
-                   help="篇幅與深度：1 簡短、2 精簡、3 標準（照工作流原本的寫法）、4 深入、5 詳盡")
+                   help="篇幅與深度：1 low、2 medium、3 high（預設，照工作流原本的寫法）、4 xhigh、5 max")
     r.add_argument("--json", action="store_true", help="結果用 JSON 輸出（方便接其他程式）")
     r.add_argument("--quiet", "-q", action="store_true", help="不印進度，只印結果")
     sub.add_parser("list", help="列出工作流和 skill")
@@ -242,4 +242,8 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--mcp-skills" in sys.argv:                  # codex 開的 MCP 伺服器（見 mcp_skills.py）：不要跑任何其他啟動流程
+        import mcp_skills
+        mcp_skills.serve()
+        sys.exit(0)
     sys.exit(main())

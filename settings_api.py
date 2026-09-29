@@ -43,6 +43,11 @@ def masked():
 
 
 def save(body):
+    with engine.CONFIG_LOCK:                          # 跟「自動加入訂閱模型」用同一把鎖，免得互相蓋掉
+        return _save(body)
+
+
+def _save(body):
     raw = engine.json.loads((engine.ROOT / "config.json").read_text(encoding="utf-8"))
     for path, (lo, hi) in NUM.items():
         v = _get(body, path)
@@ -116,6 +121,10 @@ def save(body):
              "enabled": bool(p.get("enabled", True)), "default_model": str(p.get("default_model") or "")[:120]}
         if kind == "cli":
             q["type"] = "cli"
+            eff = str(p.get("effort") or "")
+            if eff not in ("", "low", "medium", "high", "xhigh"):
+                raise ValueError(f"{q['label']} 的思考強度不認得：{eff}")
+            q["effort"] = eff
             if p.get("path") is not None:
                 q["path"] = str(p["path"]).strip()[:500]
         else:

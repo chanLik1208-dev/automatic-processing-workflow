@@ -330,6 +330,33 @@ def trash_workflow(name):
     return str(dest)
 
 
+def delete_run(rid):
+    """刪一筆執行紀錄（連同過程）。它用 save_report 存的報告搬進 reports/.trash/（不直接刪，要救回來搬回去就好）。
+    執行中的不能刪。回傳搬走了哪些報告。"""
+    with db() as c:
+        run = c.execute("SELECT status FROM runs WHERE id=?", (rid,)).fetchone()
+        if not run:
+            raise ValueError("找不到這筆紀錄")
+        if run["status"] == "running" or rid in LIVE:
+            raise ValueError("還在執行的紀錄不能刪，先按「停止」")
+        outs = [r[0] for r in c.execute("SELECT output FROM steps WHERE run_id=? AND kind='tool' AND name='save_report'", (rid,))]
+    reports, moved = (ROOT / "reports").resolve(), []
+    for o in outs:
+        try:
+            f = pathlib.Path(str(o or "").strip()).resolve()
+        except (OSError, ValueError):
+            continue
+        if f.parent == reports and f.is_file():          # 只動 reports/ 底下、真的是這次存的檔
+            trash = reports / ".trash"
+            trash.mkdir(exist_ok=True)
+            f.replace(trash / f.name)
+            moved.append(f.name)
+    with _db_lock, db() as c:
+        c.execute("DELETE FROM steps WHERE run_id=?", (rid,))
+        c.execute("DELETE FROM runs WHERE id=?", (rid,))
+    return moved
+
+
 # ---------- LLM ----------
 
 def provider_conf(name):
@@ -656,27 +683,53 @@ def codex_models(exe):
     return _codex_models["list"]
 
 
+def _mcp_command():
+    """codex 要怎麼開我們的 MCP 伺服器：打包版就是自己（加 --mcp-skills），原始碼執行是 python app.py --mcp-skills。"""
+    if getattr(sys, "frozen", False):
+        return sys.executable, ["--mcp-skills"]
+    return sys.executable, [str(APP_DIR / "app.py"), "--mcp-skills"]
+
+
 def chat_codex(p, model, messages, tools, live, timeout=600):
-    """ChatGPT 訂閱（codex exec）。codex 本身是會跑指令的 agent：放在空資料夾、唯讀沙盒、
-    不載入使用者設定 / 規則 / MCP、不存對話紀錄；工具一律照 TOOL_PROTOCOL 用 JSON 回給我們自己執行。"""
-    system = messages[0]["content"]
-    if tools:
-        system += TOOL_PROTOCOL.format(specs=json.dumps([t["function"] for t in tools], ensure_ascii=False, indent=1))
-    system += "\n\n不要執行任何 shell 指令或讀寫檔案；需要資料就照上面的格式呼叫提供給你的工具。"
+    """ChatGPT 訂閱（codex exec）。codex 是會自己跑工具的 agent，所以工具不走文字格式，
+    而是用 MCP 交給它（mcp_skills.py）：GPT 用原生的工具呼叫，比較不會說「沒有這個工具」而放棄。
+    codex 在同一次執行裡自己把工具迴圈跑完，每次呼叫由 MCP 伺服器寫成執行紀錄的步驟；這裡回傳最後的回覆。
+    放在空資料夾、唯讀沙盒、不載入使用者的設定 / 規則 / MCP、不存對話紀錄。"""
+    system = messages[0]["content"] + (
+        "\n\n需要資料或要存檔時，用 autoworkflow 提供的工具。不要用你內建的 shell、檔案、瀏覽工具。" if tools
+        else "\n\n不要使用你內建的 shell、檔案、瀏覽工具，直接用文字回答。")
     cmd = [cli_exe(p), "exec", "--json", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
-           "-s", "read-only", "--color", "never"]
+           "-s", "read-only", "--color", "never",
+           # 思考摘要預設是關的（每個 GPT 模型的 default_reasoning_summary 都是 none），不開就看不到它在想什麼
+           "-c", 'model_reasoning_summary="auto"']
+    if p.get("effort"):                                # 思考強度：medium（預設）碰到簡單的題目常常完全不思考
+        cmd += ["-c", f'model_reasoning_effort="{p["effort"]}"']
     if model:
         cmd += ["-m", model]
-    cmd.append("-")                                    # 提示從標準輸入讀（沒有長度限制，也沒有系統提示參數）
+    # Windows 命令列上限約 32,000 字：系統提示太長就改放在輸入最前面
+    long_system = len(system) > 20000
+    if not long_system:
+        cmd += ["-c", f"developer_instructions={json.dumps(system, ensure_ascii=False)}"]
+    names = [t["function"]["name"] for t in tools or []]
+    if names and live.get("run_id"):
+        exe, args = _mcp_command()
+        env = {"AW_MCP_RUN": str(live["run_id"]), "AW_MCP_SKILLS": ",".join(names),
+               "AW_MCP_MAX": str(live.get("_max_steps", 12)), "AUTOWORKFLOW_HOME": str(ROOT)}
+        s = "mcp_servers.autoworkflow"
+        cmd += ["-c", f"{s}.command={json.dumps(exe)}", "-c", f"{s}.args={json.dumps(args)}",
+                "-c", f"{s}.env={{" + ",".join(f"{k}={json.dumps(v)}" for k, v in env.items()) + "}",
+                "-c", f'{s}.default_tools_approval_mode="approve"',     # 不設的話每次呼叫都要人工核准，會直接被擋
+                "-c", f"{s}.startup_timeout_sec=60"]                   # 打包成單一執行檔時，啟動要先解壓，比較慢
+    cmd.append("-")                                    # 對話內容從標準輸入讀（沒有長度限制）
     tmp = tempfile.mkdtemp(prefix="wf-cli-")
     proc = subprocess.Popen(cmd, cwd=tmp, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8")
     live["_proc"] = proc
     killer = threading.Timer(timeout, proc.kill)
     killer.start()
-    text, thinking, usage, err = "", "", {}, None
+    text, thinking, usage, err, seen = "", "", {}, None, []
     try:
-        proc.stdin.write(f"## 系統指示（嚴格遵守）\n{system}\n\n" + _transcript(messages))
+        proc.stdin.write((f"## 系統指示（嚴格遵守）\n{system}\n\n" if long_system else "") + _transcript(messages))
         proc.stdin.close()
         live.update(phase="thinking")
         for line in proc.stdout:
@@ -685,15 +738,22 @@ def chat_codex(p, model, messages, tools, live, timeout=600):
             except ValueError:
                 continue
             t, item = e.get("type"), e.get("item") or {}
+            kind = item.get("type")
             live["last_token"] = time.time()
-            if t == "item.completed" and item.get("type") == "agent_message":
-                text = item.get("text") or ""
-                if '"tool_calls"' in text or text.lstrip().startswith("{"):
-                    live.update(phase="deciding", tool={"name": "", "args": ""})
+            if t.startswith("item.") or t in ("turn.failed", "error"):
+                seen.append(f"{t[5:] if t.startswith('item.') else t}:{kind or ''}")
+            if kind == "mcp_tool_call":
+                if t == "item.started":                # 「現在」那區顯示它正在用哪個工具
+                    live.update(phase="tool", since=time.time(), tool={"name": item.get("tool", ""),
+                                                                        "args": json.dumps(item.get("arguments") or {}, ensure_ascii=False)})
+                    live["round"] = live.get("round", 1) + 1
                 else:
-                    live.update(phase="writing", content=text)
-            elif item.get("type") == "reasoning" and item.get("text"):
-                thinking = (thinking + "\n" + item["text"]).strip() if t == "item.completed" else thinking
+                    live.update(phase="thinking", since=time.time())
+            elif t == "item.completed" and kind == "agent_message":
+                text = item.get("text") or ""
+                live.update(phase="writing", content=text)
+            elif kind == "reasoning" and item.get("text") and t == "item.completed":
+                thinking = (thinking + "\n" + item["text"]).strip()
                 live.update(phase="thinking", reasoning=thinking)
             elif t == "turn.completed":
                 usage = e.get("usage") or {}
@@ -708,6 +768,9 @@ def chat_codex(p, model, messages, tools, live, timeout=600):
         raise Cancelled()
     if err or proc.returncode:
         raise RuntimeError(f"codex 執行失敗：{err or proc.stderr.read()[-400:] or proc.returncode}")
+    if not text.strip():
+        # 沒有任何回覆：把收到的事件寫進錯誤，才知道它做了什麼
+        raise ModelBroken("codex 沒有回傳任何內容（收到的事件：" + ("、".join(seen[-12:]) or "沒有") + "）")
     return text, thinking, {"prompt_tokens": usage.get("input_tokens", 0), "completion_tokens": usage.get("output_tokens", 0)}
 
 
@@ -715,8 +778,9 @@ def chat_cli(p, model, messages, tools, live, timeout=600):
     if p.get("adapter") not in CLI_ADAPTERS:
         raise RuntimeError(f"{p.get('label') or p['command']} 的串接還沒完成")
     if p.get("adapter") == "codex":
+        # 工具已經在 codex 裡透過 MCP 跑完了，回來的是最後的回覆：不再解析工具 JSON
         text, thinking, usage = chat_codex(p, model, messages, tools, live, timeout)
-        return _cli_reply(p, model or "", text, thinking, tools, usage)
+        return _cli_reply(p, model or "", text, thinking, None, usage)
     system = messages[0]["content"]
     if tools:
         system += TOOL_PROTOCOL.format(specs=json.dumps([t["function"] for t in tools], ensure_ascii=False, indent=1))
@@ -724,7 +788,9 @@ def chat_cli(p, model, messages, tools, live, timeout=600):
     cmd = [cli_exe(p),
            "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
            "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--setting-sources", "project",
-           "--model", model]
+           # 沒有這個設定，-p 模式的思考區塊只有空字串（內容被省略），介面上就看不到模型在想什麼
+           "--settings", json.dumps({"showThinkingSummaries": True}),
+           "--model", model] + (["--effort", p["effort"]] if p.get("effort") else [])
     # Windows 的命令列上限約 32,000 字元：系統提示太長就改放在標準輸入最前面（標準輸入沒有長度限制）
     long_system = len(system) > 24000
     cmd += ["--system-prompt", "嚴格遵守輸入開頭「## 系統指示」區塊裡的所有指示，那就是你的系統提示。" if long_system else system]
@@ -960,7 +1026,7 @@ def pick_auto(tried=()):
 
 
 DISCOVERS_MODELS = {"codex", "claude"}             # 訂閱：每個模型自動各加一列到自動模式（codex 自己回報、claude 用設定裡的清單）
-_sync_lock = threading.Lock()
+CONFIG_LOCK = threading.RLock()                     # 寫 config.json 的都要拿這把鎖（自動加入模型 vs 使用者按儲存）
 
 
 def sync_auto_models(status):
@@ -968,7 +1034,7 @@ def sync_auto_models(status):
     只加「第一次看到」的：使用者刪掉的那列不會再被加回來，已經排好的順序也不動。回傳這次加了哪些。"""
     conf = load_config()
     added = []
-    with _sync_lock:
+    with CONFIG_LOCK:
         raw = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
         auto = raw.setdefault("auto", {})
         order = auto.get("order", conf["auto"]["order"])
@@ -1041,21 +1107,21 @@ def strip_think(text):
 # ---------- Agent 迴圈 ----------
 
 # ---------------------------------------------------------------- 篇幅與深度（類似 effort 的滑桿）
-# 3「標準」= 照工作流原本的寫法，什麼都不加；往兩邊才加指示。深入以上同時放寬輪數和單輪輸出，免得寫到一半被截斷。
+# 等級名稱跟 Claude Code 的 effort 一樣（low / medium / high / xhigh / max）。3 high = 照工作流原本的寫法，什麼都不加；往兩邊才加指示。深入以上同時放寬輪數和單輪輸出，免得寫到一半被截斷。
 DEPTH_DEFAULT = 3
 DEPTH = {
     # note：篇幅和結構；sources：只有工作流能上網查資料時才加（沒有工具還要求「讀 6–10 個來源」，模型會編造出處）
-    1: {"label": "簡短", "hint": "約 200–400 字，只講結論",
+    1: {"label": "low", "hint": "約 200–400 字，只講結論",
         "note": "最後的回覆盡量短：約 200–400 字，只講結論和最重要的 2–3 點，不寫背景和細節。",
         "sources": "資料夠下結論就停，不用多讀來源（1–2 個就好）。"},
-    2: {"label": "精簡", "hint": "約 500–800 字，重點條列",
+    2: {"label": "medium", "hint": "約 500–800 字，重點條列",
         "note": "最後的回覆精簡：約 500–800 字，重點條列、每點一兩句說明，省略次要細節。",
         "sources": "讀 2–3 個來源就好。"},
-    3: {"label": "標準", "hint": "照工作流原本的寫法", "note": None},
-    4: {"label": "深入", "hint": "約 1500–3000 字，交叉比對", "steps": 6, "tokens": 8192,
+    3: {"label": "high", "hint": "預設：照工作流原本的寫法", "note": None},
+    4: {"label": "xhigh", "hint": "約 1500–3000 字，交叉比對", "steps": 6, "tokens": 8192,
         "note": "最後的回覆要深入：約 1500–3000 字，分段加小標題。不只摘要，要交代背景、原因和影響，指出還不確定的地方。",
         "sources": "至少讀 4–6 個來源，比較不同來源的說法，重要的說法要交叉比對。"},
-    5: {"label": "詳盡", "hint": "約 3000–6000 字的完整報告", "steps": 12, "tokens": 16384,
+    5: {"label": "max", "hint": "約 3000–6000 字的完整報告", "steps": 12, "tokens": 16384,
         "note": "最後的回覆寫成完整的報告：約 3000–6000 字，分章節加小標題，依序是摘要、背景、分面向的深入分析、"
                 "各方觀點比較、數據與證據、風險與限制、結論與建議。",
         "sources": "讀 6–10 個來源，盡量包含一手資料（官方文件、原始公告、論文），每個關鍵說法都標出處。"},
@@ -1090,10 +1156,32 @@ def apply_depth(wf, level, can_research=True):
             "如果這個工作流不是在寫文章或報告（例如只是檢查狀態、有問題才通知），忽略這段。")
 
 
+def exec_tool(skills, allowed, fn, arguments):
+    """執行一個 skill，回傳給模型看的文字（出錯也回傳文字，不丟例外）。run_workflow 和 MCP 伺服器共用。"""
+    try:
+        args = json.loads(arguments or "{}") if isinstance(arguments, str) else dict(arguments or {})
+        if fn not in allowed:
+            raise RuntimeError(f"這個 workflow 沒有開放 skill：{fn}")
+        return str(skills[fn].run(**args))
+    except Exception as e:
+        return f"[skill 錯誤] {e}"
+
+
+def tool_failed(result):
+    return result.startswith(("[skill 錯誤]", "找不到", "抓不到", "這個路徑不", "沒有這個", "只接受"))
+
+
+def next_idx(run_id):
+    with db() as c:
+        r = c.execute("SELECT MAX(idx) FROM steps WHERE run_id=?", (run_id,)).fetchone()[0]
+    return 0 if r is None else r + 1
+
+
 def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None):
     wf = dict(wf) if wf else load_workflows()[name]
     wf.setdefault("max_steps", cfg("limits.max_steps", 12))
-    level = parse_depth(depth) if depth not in (None, "") else wf.get("depth", DEPTH_DEFAULT)
+    # 工作流檔案被手動改成奇怪的值（例如 7）：當作「標準」，不要整個執行失敗
+    level = parse_depth(depth) if depth not in (None, "") else (wf.get("depth") if wf.get("depth") in DEPTH else DEPTH_DEFAULT)
     depth_note = apply_depth(wf, level, bool(RESEARCH_SKILLS & set(wf.get("skills", []))))
     skills = load_skills()
     allowed = [s for s in wf.get("skills", []) if s in skills]
@@ -1128,7 +1216,8 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None):
                    (name, provider, model or "", trigger, "running", time.time(), task, level))
     idx, tin, tout = 0, 0, 0
     live = LIVE[run_id] = {"run_id": run_id, "workflow": name, "title": wf.get("title", name),
-                           "started": time.time(), "round": 0, "provider": provider, "model": model or ""}
+                           "started": time.time(), "round": 0, "provider": provider, "model": model or "",
+                           "_max_steps": wf["max_steps"]}
 
     fails, first_err = 0, None
     used = {mkey(provider, model)}                     # 這次執行用過的 (來源, 模型)，不會重複換回去
@@ -1184,7 +1273,7 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None):
             msg = resp["choices"][0]["message"]
             reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
             calls = msg.get("tool_calls") or []
-
+            idx = max(idx, next_idx(run_id))                  # codex 透過 MCP 自己執行工具時，工具步驟已經寫進去了
             add_step(run_id, idx, "llm", resp.get("model", model or provider),
                      reasoning, json.dumps({"content": msg.get("content"), "tool_calls": calls, "raw": msg.get("raw")},
                                            ensure_ascii=False), ms)
@@ -1201,17 +1290,11 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None):
                 fn = call["function"]["name"]
                 t0 = time.time()
                 live.update(phase="tool", since=t0, tool={"name": fn, "args": call["function"].get("arguments")})
-                try:
-                    args = json.loads(call["function"].get("arguments") or "{}")
-                    if fn not in allowed:
-                        raise RuntimeError(f"這個 workflow 沒有開放 skill：{fn}")
-                    result = str(skills[fn].run(**args))
-                except Exception as e:
-                    result = f"[skill 錯誤] {e}"
+                result = exec_tool(skills, allowed, fn, call["function"].get("arguments"))
                 add_step(run_id, idx, "tool", fn, call["function"].get("arguments"), result[:20000],
                          int((time.time() - t0) * 1000))
                 idx += 1
-                failed = result.startswith(("[skill 錯誤]", "找不到", "抓不到", "這個路徑不", "沒有這個", "只接受"))
+                failed = tool_failed(result)
                 fails = fails + 1 if failed else 0
                 if fails >= cfg("limits.fail_streak", 3):
                     # 小模型碰到錯誤常會一直換個猜法重試；連錯三次就叫它停下來照實回報

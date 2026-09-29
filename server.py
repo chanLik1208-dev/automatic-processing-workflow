@@ -179,6 +179,13 @@ class Api:
     def route_post(self, raw_path, body):
         u = urlparse(raw_path)
         parts = u.path.strip("/").split("/")
+        if len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "delete":
+            if not parts[2].isdigit():
+                return self.send({"error": "紀錄編號不對"}, 400)
+            try:
+                return self.send({"ok": True, "moved_reports": engine.delete_run(int(parts[2]))})
+            except ValueError as e:
+                return self.send({"error": str(e)}, 409)
         if parts == ["api", "export"]:
             fmt, html = body.get("format"), body.get("html") or ""
             if fmt not in ("docx", "pdf") or not html or len(html) > 5_000_000:
