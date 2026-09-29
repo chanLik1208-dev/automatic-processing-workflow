@@ -51,7 +51,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install pyinstaller pywebview
+      - run: pip install pyinstaller pywebview PySide6-Essentials
       - name: 發佈前檢查（設定、skill、匯出、排程鎖…；需要本地模型的項目在 CI 上會略過）
         run: python tests/run_checks.py
       - run: python build.py

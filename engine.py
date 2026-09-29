@@ -35,6 +35,50 @@ def _data_dir():
 
 
 ROOT = _data_dir()
+
+
+# ---------- 找得到使用者裝的 CLI ----------
+# 從 Finder / 開始選單開的程式拿不到終端機的 PATH（macOS 只有 /usr/bin:/bin:/usr/sbin:/sbin），
+# 所以 claude、codex、gemini 會被誤判成「沒有安裝」，npm 裝的 CLI 也找不到 node。
+def _common_bin_dirs():
+    home = pathlib.Path.home()
+    dirs = [home / ".local" / "bin", home / ".claude" / "local", home / ".npm-global" / "bin", home / ".bun" / "bin",
+            home / ".volta" / "bin", home / ".cargo" / "bin", pathlib.Path("/opt/homebrew/bin"), pathlib.Path("/usr/local/bin")]
+    nvm = sorted((home / ".nvm" / "versions" / "node").glob("*/bin"), reverse=True)
+    dirs += nvm[:1]                                          # nvm：用最新裝的那個版本
+    if sys.platform == "win32":
+        for env in ("APPDATA", "LOCALAPPDATA"):
+            base = pathlib.Path(os.environ.get(env, ""))
+            dirs += [base / "npm", base / "Programs" / "claude", base / "Microsoft" / "WindowsApps"]
+    return [str(d) for d in dirs if d.is_dir()]
+
+
+def _add_path(dirs, front=False):
+    cur = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d]
+    new = [d for d in dirs if d and d not in cur]
+    if new:
+        os.environ["PATH"] = os.pathsep.join(new + cur if front else cur + new)
+
+
+def fix_path():
+    _add_path(_common_bin_dirs())
+    if sys.platform == "win32":
+        return
+
+    def from_login_shell():                             # 背景讀登入 shell 的 PATH（讀 .zshrc 可能要一點時間，不擋啟動）
+        shell = os.environ.get("SHELL") or ("/bin/zsh" if sys.platform == "darwin" else "/bin/bash")
+        try:
+            out = subprocess.run([shell, "-ilc", 'printf "__PATH__%s__PATH__" "$PATH"'], capture_output=True,
+                                 text=True, encoding="utf-8", errors="replace", timeout=8, stdin=subprocess.DEVNULL).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return
+        m = re.search(r"__PATH__(.*?)__PATH__", out, re.S)
+        if m:
+            _add_path([d for d in m.group(1).split(":") if d])
+    threading.Thread(target=from_login_shell, daemon=True).start()
+
+
+fix_path()
 DB_PATH = ROOT / "data" / "runs.db"
 
 

@@ -13,7 +13,7 @@
 | Linux | `AutoWorkflow-linux-x64.tar.gz` | `tar xzf AutoWorkflow-linux-x64.tar.gz && ./AutoWorkflow-linux-x64/AutoWorkflow` |
 | Windows | `AutoWorkflow-windows-x64.exe` | 直接執行 |
 
-執行後會開原生視窗。執行檔沒有程式碼簽章，第一次開要多一步：
+執行後會開原生介面（Qt，用系統自己的控制項，不開任何 port）。想用舊的 WebView 介面加 `--webview`。執行檔沒有程式碼簽章，第一次開要多一步：
 
 - **macOS**：第一次開被擋的話，到「系統設定 → 隱私權與安全性」按「仍要開啟」，或執行
   `xattr -dr com.apple.quarantine /Applications/AutoWorkflow.app`
