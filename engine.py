@@ -802,7 +802,26 @@ def ping_provider(name):
             ids = [m["id"] for m in json.loads(r.read()).get("data", [])]
         return {"ok": True, "models": ids, "default_model": p["default_model"], "label": p.get("label")}
     except Exception as e:
-        return {"ok": False, "error": str(e), "label": (load_config()["providers"].get(name) or {}).get("label")}
+        return {"ok": False, "error": _friendly_conn_error(e), "label": (load_config()["providers"].get(name) or {}).get("label")}
+
+
+def _friendly_conn_error(e):
+    """把 urllib 的原始錯誤（例如 [WinError 10061]、[Errno 61] Connection refused）翻成白話。"""
+    msg = str(e)
+    reason = getattr(e, "reason", None)
+    if isinstance(e, ConnectionRefusedError) or isinstance(reason, ConnectionRefusedError) or \
+            re.search(r"refused|10061|Errno 61|Errno 111", msg, re.I):
+        return "連不上：服務沒有開（LM Studio 要開啟，並在 Developer 分頁啟動 server）"
+    if re.search(r"timed out|timeout", msg, re.I):
+        return "連線逾時"
+    if re.search(r"Remote end closed|Connection reset|RemoteDisconnected", msg, re.I):
+        return "連線被中斷（網址可能不對，或被網路、代理擋掉了）"
+    if re.search(r"getaddrinfo|Name or service not known|nodename nor servname", msg, re.I):
+        return "找不到這個網址（網址打錯，或沒有網路）"
+    if isinstance(e, urllib.error.HTTPError):
+        return {401: "API key 不對或已失效", 403: "沒有權限（API key 不對，或這個地區不能用）",
+                404: "網址不對（找不到 /models）", 429: "請求太頻繁，被限流了"}.get(e.code, f"伺服器回了錯誤 {e.code}")
+    return msg
 
 
 def strip_think(text):
