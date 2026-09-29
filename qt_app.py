@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDia
 
 import engine
 import server
+import motion
+import theme
 
 # ---------------------------------------------------------------- 白話化（跟網頁版同一套說法）
 STATUS = {"success": ("成功", "ok"), "failed": ("失敗", "bad"), "running": ("執行中", "run"),
@@ -173,61 +175,20 @@ class Backend(QObject):
 
 # ---------------------------------------------------------------- 動態（Dynamization）
 # 原生元件本身就快；動態只用在「東西出現 / 換掉」的地方，而且用 transform 類的便宜屬性。
-def spring_curve(dv, b):
-    """spring(Dv, b) → QEasingCurve（spring.md §4 閉式解），回傳 (curve, 毫秒)。"""
-    z, w = 1 - b, 2 * math.pi / dv
-
-    def d(t):
-        if z < 1:
-            wd = w * math.sqrt(1 - z * z)
-            return math.exp(-z * w * t) * (-math.cos(wd * t) - (z * w / wd) * math.sin(wd * t))
-        return -math.exp(-w * t) * (1 + w * t)
-    T, t = 0.0, 0.0
-    while t < dv * 6:
-        if abs(d(t)) >= 0.005:
-            T = t
-        t += 0.0005
-    T = round(T + 0.0005, 2)
-    # 這版 PySide6 不接受 Python 函式當自訂 easing；改成回傳 f(進度 0–1) → 位置，動畫每一幀自己套
-    return (lambda p: 1.0 if p >= 1 else 1 + d(p * T)), int(T * 1000)
-
-
-ENTER = spring_curve(0.3, 0.15)
+spring_curve = motion.bake
 
 
 def slide_in(widget, dy=8):
-    """配方 §1：從稍微下面一點進場（只動位置，不動透明度——Qt 的透明度效果很貴）。
-    用 QVariantAnimation 跑 0→1 的線性進度，每一幀套彈簧公式算位置。"""
-    from PySide6.QtCore import QPoint, QVariantAnimation
-    f, ms = ENTER
-    if getattr(widget, "_slide", None):                  # 前一個還在跑：從現在的位置接手，不疊兩條（errata / waapi Interruption）
-        widget._slide.stop()
-    end = widget._slide_end if getattr(widget, "_slide", None) else widget.pos()
-    widget._slide_end = end
-    anim = QVariantAnimation(widget)
-    anim.setStartValue(0.0)
-    anim.setEndValue(1.0)
-    anim.setDuration(ms)
-    anim.valueChanged.connect(lambda p: widget.move(end + QPoint(0, round(dy * (1 - f(p))))))
-    anim.finished.connect(lambda: (widget.move(end), setattr(widget, "_slide", None)))
-    widget._slide = anim
-    anim.start()
+    """進場（enterEl）：淡入 ＋ 從 dy 用彈簧回到原位。"""
+    motion.enter(widget, dy=dy)
 
 
 # ---------------------------------------------------------------- 色彩
 ACCENT = "#CCCCFF"
 
 
-def palette_is_dark():
-    return QApplication.palette().color(QPalette.Window).lightness() < 128
-
-
 def C(role):
-    dark = palette_is_dark()
-    table = {"ok": ("#1d7f47", "#52c186"), "bad": ("#bf3a2e", "#ee6d61"), "run": ("#5252b8", ACCENT),
-             "warn": ("#a86d12", "#e0a84a"), "muted": ("#85857d", "#8d8c85"), "model": (ACCENT, ACCENT),
-             "tool": ("#eb6834", "#d95926"), "tint": ("#f0efea", "#262623"), "line": ("#e4e2dc", "#31312d")}
-    return table[role][1 if dark else 0]
+    return theme.T[role]
 
 
 # ---------------------------------------------------------------- 小元件
@@ -385,6 +346,7 @@ class WorkflowTab(QWidget):
         bar.setObjectName("panel")
         h = QHBoxLayout(bar)
         self.combo = QComboBox()
+        self.combo.setObjectName("picker")
         self.combo.setMinimumWidth(220)
         self.combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         self.combo.activated.connect(self.on_pick)
@@ -427,7 +389,11 @@ class WorkflowTab(QWidget):
         top.addWidget(self.live_stop)
         lv.addLayout(top)
         self.live_what = label("", size=17, bold=True)
-        lv.addWidget(self.live_what)
+        wrow = QHBoxLayout()
+        wrow.setSpacing(8)
+        wrow.addWidget(motion.PulseDot())
+        wrow.addWidget(self.live_what, 1)
+        lv.addLayout(wrow)
         prow = QHBoxLayout()
         self.live_prog_text = label("", "muted")
         self.live_prog = QProgressBar()
@@ -459,7 +425,10 @@ class WorkflowTab(QWidget):
         lv2.setContentsMargins(0, 0, 0, 0)
         self.runs_title = label("最近的執行", "muted", bold=True)
         lv2.addWidget(self.runs_title)
-        self.run_list = QListWidget()
+        self.run_list = motion.MotionList()
+        self.run_list.setItemDelegate(theme.RunDelegate(self.run_list))
+        self.run_list.setMouseTracking(True)
+        self.run_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.run_list.itemSelectionChanged.connect(self.on_select_run)
         lv2.addWidget(self.run_list)
         right = QWidget()
@@ -482,6 +451,8 @@ class WorkflowTab(QWidget):
         rh.addWidget(self.export_btn)
         rv.addLayout(rh)
         self.view = QTextBrowser()
+        self.view.document().setDefaultStyleSheet(theme.doc_css())
+        self.view.document().setDocumentMargin(16)
         self.view.setOpenLinks(False)
         self.view.anchorClicked.connect(self.on_link)
         rv.addWidget(self.view)
@@ -544,16 +515,22 @@ class WorkflowTab(QWidget):
         new_ids = [r["id"] for r in rows]
         if known != new_ids or getattr(self, "_rows_sig", None) != json.dumps(rows, sort_keys=True, default=str):
             self._rows_sig = json.dumps(rows, sort_keys=True, default=str)
+            before = self.run_list.tops()
+            fresh = not before or getattr(self, "_list_filter", 0) != self.sel_wf
+            self._list_filter = self.sel_wf
             self.run_list.clear()
             for r in rows:
                 st = STATUS.get(r["status"], (r["status"], "muted"))
                 took = dur(r["finished"] - r["started"]) if r["finished"] else ("進行中" if r["status"] == "running" else "")
-                it = QListWidgetItem(f"{self.win.wf_title(r['workflow'])}　{st[0]}\n"
-                                     f"{TRIGGER.get(r['trigger'], '手動')} · {self.win.model_name(r['model'], r['provider'])} · {when(r['started'])}"
-                                     f"{' · ' + took if took else ''}")
+                it = QListWidgetItem(self.win.wf_title(r['workflow']))
                 it.setData(Qt.UserRole, r["id"])
-                it.setForeground(QColor(C(st[1])) if r["status"] != "success" else it.foreground())
+                it.setData(Qt.UserRole + 1, {
+                    "title": self.win.wf_title(r['workflow']), "dot": C(st[1]),
+                    "meta": f"{TRIGGER.get(r['trigger'], '手動')} · {self.win.model_name(r['model'], r['provider'])}",
+                    "status_text": st[0], "status_color": C(st[1]),
+                    "right": when(r['started']) + (f" · {took}" if took else "")})
                 self.run_list.addItem(it)
+            self.run_list.stagger() if fresh else self.run_list.flip(before)
         if sel is None and rows:
             sel = rows[0]["id"]
         for i in range(self.run_list.count()):
@@ -598,12 +575,20 @@ class WorkflowTab(QWidget):
                          f"模型在讀、在想：{dur(model) or '不到 1 秒'}（{round(model / total * 100)}%）　"
                          f"使用工具：{dur(total - model) or '不到 1 秒'}（{round((total - model) / total * 100)}%）</p>")
         parts.append(process_html(d["steps"]))
-        scroll = self.view.verticalScrollBar().value() if self.shown_detail == r["id"] else 0
-        self.view.setHtml("".join(parts))
-        self.view.verticalScrollBar().setValue(scroll)
+        same = self.shown_detail == r["id"]
+        scroll = self.view.verticalScrollBar().value() if same else 0
+
+        def apply():
+            self.view.setHtml("".join(parts))
+            self.view.verticalScrollBar().setValue(scroll)
         self.export_btn.setEnabled(r["status"] != "running")
-        if self.shown_detail != r["id"]:
+        if same:
+            apply()
+        elif self.shown_detail is None:
+            apply()
             slide_in(self.view)
+        else:
+            motion.swap(self.view, apply)               # 換一筆：舊的先離場，新的再進場
         self.shown_detail = r["id"]
 
     def show_welcome(self):
@@ -653,7 +638,7 @@ class WorkflowTab(QWidget):
         self.live_meta.setText(f"已經跑了 {dur(time.time() - L['started'])} · {self.win.model_name(L.get('model'), L.get('provider'))}")
         if self.live_prev.get("what") != phase + lab:
             slide_in(self.live_what, 4)
-        self.live_what.setText(f"<span style='color:{C('run')}'>●</span> {esc(what)}　<span style='color:{C('muted')};font-size:13px'>{dur(el) or '0 秒'}</span>")
+        self.live_what.setText(f"{esc(what)}　<span style='color:{C('muted')};font-size:13px'>{dur(el) or '0 秒'}</span>")
         self.live_what.setTextFormat(Qt.RichText)
         mx = (self.win.wf.get(L["workflow"]) or {}).get("max_steps") or (self.win.settings.get("limits") or {}).get("max_steps", 12)
         self.live_prog.setMaximum(mx)
@@ -745,6 +730,12 @@ class WorkflowTab(QWidget):
 
 # ---------------------------------------------------------------- 工作流編輯
 class EditorDialog(QDialog):
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not getattr(self, "_entered", False):      # 遮罩先到位，內容再進場（配方 §6）
+            self._entered = True
+            QTimer.singleShot(0, lambda: motion.window_in(self))
+
     def __init__(self, win, w=None, pre=None):
         super().__init__(win)
         self.win, self.w = win, w
@@ -965,7 +956,10 @@ class SkillsTab(QWidget):
         h.addWidget(label("知識型 skill（SKILL.md）是給模型看的做事方法；工具型 skill（.py）是模型能呼叫的動作。", "muted"), 1)
         v.addWidget(bar)
         split = QSplitter()
-        self.list = QListWidget()
+        self.list = motion.MotionList()
+        self.list.setItemDelegate(theme.HeaderDelegate(self.list))
+        self.list.setMouseTracking(True)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.list.itemSelectionChanged.connect(self.on_select)
         self.stack = QStackedWidget()
         split.addWidget(self.list)
@@ -976,10 +970,10 @@ class SkillsTab(QWidget):
         self.empty.setAlignment(Qt.AlignCenter)
         self.stack.addWidget(self.empty)
 
-    def load(self, keep=None):
-        self.b.get("/api/skills", lambda s: self._render(s or [], keep))
+    def load(self, keep=None, animate=False):
+        self.b.get("/api/skills", lambda s: self._render(s or [], keep, animate))
 
-    def _render(self, skills, keep):
+    def _render(self, skills, keep, animate=False):
         self.win.skills = skills
         self.list.blockSignals(True)
         self.list.clear()
@@ -990,13 +984,18 @@ class SkillsTab(QWidget):
             hdr.setFlags(Qt.NoItemFlags)
             self.list.addItem(hdr)
             for s in items:
-                it = QListWidgetItem(f"{s.get('title') or s['name']}　[{'知識' if kind == 'knowledge' else '工具'}·{src.get(s['source'], s['source'])}]\n"
-                                     f"{(s['description'] or '（沒有說明）')[:80]}")
+                it = QListWidgetItem(s.get('title') or s['name'])
                 it.setData(Qt.UserRole, s["name"])
+                it.setData(Qt.UserRole + 1, {
+                    "title": s.get('title') or s['name'], "meta": (s['description'] or '（沒有說明）')[:120],
+                    "status_text": f"{'知識' if kind == 'knowledge' else '工具'} · {src.get(s['source'], s['source'])}",
+                    "status_color": C("muted")})
                 self.list.addItem(it)
                 if s["name"] == keep:
                     self.list.setCurrentItem(it)
         self.list.blockSignals(False)
+        if animate:
+            self.list.stagger()
         if keep:
             self.show_skill(keep)
 
@@ -1149,6 +1148,8 @@ class SkillsTab(QWidget):
         g = QHBoxLayout(page)
         left, right = QVBoxLayout(), QVBoxLayout()
         self.chat = QTextBrowser()
+        self.chat.document().setDefaultStyleSheet(theme.doc_css())
+        self.chat.document().setDocumentMargin(16)
         self.chat.setOpenExternalLinks(True)
         self.b_in = QPlainTextEdit()
         self.b_in.setPlaceholderText("描述你想要的 skill，或要怎麼改（⌘/Ctrl + Enter 送出）")
@@ -1273,6 +1274,7 @@ class SettingsTab(QScrollArea):
         if note:
             f.addRow(label(note, "muted"))
         v.addWidget(box)
+        self._secs.append(box)
         return f
 
     def num(self, f, text, path, lo, hi, hint="", unit=""):
@@ -1313,6 +1315,7 @@ class SettingsTab(QScrollArea):
 
     def build(self, s, usage):
         self.s, self.usage, self.fields, self.prov_rows, self.auto_rows = s, usage, {}, {}, []
+        self._secs = []
         page = QWidget()
         v = QVBoxLayout(page)
         # 模型來源
@@ -1409,6 +1412,8 @@ class SettingsTab(QScrollArea):
         v.addLayout(row)
         v.addStretch()
         self.setWidget(page)
+        for i, box in enumerate(self._secs[:12]):
+            motion.enter(box, delay=40 + i * 40)
 
     def show_update(self, st):
         if not getattr(self, "up_status", None):
@@ -1533,7 +1538,7 @@ class SettingsTab(QScrollArea):
                 self.auto_rows[i], self.auto_rows[j] = self.auto_rows[j], self.auto_rows[i]
                 self.auto_box.removeWidget(box)
                 self.auto_box.insertWidget(j, box)
-                slide_in(box, -8 * d)
+                motion.enter(box, dy=-box.height() * d, spring="layout", fade=None)
         up.clicked.connect(lambda: move(-1))
         down.clicked.connect(lambda: move(1))
         rm.clicked.connect(lambda: (self.auto_rows.remove(row), box.deleteLater()))
@@ -1612,7 +1617,7 @@ class MainWindow(QMainWindow):
         v.addWidget(self.summary)
         self.update_bar = QLabel()
         self.update_bar.setTextFormat(Qt.RichText)
-        self.update_bar.setStyleSheet(f"background:{C('model')};color:#1e1e3c;padding:6px 12px;border-radius:6px")
+        self.update_bar.setObjectName("updatebar")
         self.update_bar.linkActivated.connect(self.on_update_link)
         self.update_bar.hide()
         v.addWidget(self.update_bar)
@@ -1624,17 +1629,10 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.settings_tab, "設定")
         self.tabs.currentChanged.connect(self.on_tab)
         v.addWidget(self.tabs, 1)
+        self.tab_line = theme.TabUnderline(self.tabs, motion.S["layout"])
         self.setCentralWidget(root)
         self.toast_label = QLabel(self)
         self.toast_label.hide()
-        self.setStyleSheet(f"""
-            QFrame#panel {{ border:1px solid {C('line')}; border-radius:10px; padding:6px; }}
-            QFrame#live {{ border:1px solid {C('run')}; border-radius:10px; padding:8px; }}
-            QFrame#card {{ border:1px solid {C('line')}; border-radius:8px; padding:4px; }}
-            QPushButton:default {{ background:{ACCENT}; color:#1e1e3c; border-radius:6px; padding:5px 14px; }}
-            QProgressBar::chunk {{ background:{C('run')}; border-radius:3px; }}
-            QListWidget::item {{ padding:8px 4px; }}
-        """)
         self.load_providers()
         self.backend.get("/api/settings", lambda s: setattr(self, "settings", s or {}))
         self.backend.get("/api/skills", lambda s: setattr(self, "skills", s or []))
@@ -1740,10 +1738,13 @@ class MainWindow(QMainWindow):
         m.addAction("到設定管理模型來源…", lambda: self.tabs.setCurrentIndex(2))
 
     def on_tab(self, i):
-        page = self.tabs.widget(i)
-        slide_in(page)
+        old = self.tabs.widget(getattr(self, "_prev_tab", 0))
+        self._prev_tab = i
+        if old is not None and old is not self.tabs.widget(i):
+            motion.swap(self.tabs.widget(i), lambda: None, dy_out=-6, before=old.grab(),
+                        enter_after=i == 0)                  # 先離場再進場（配方 §23）；設定、Skills 由裡面的錯開進場接手
         if i == 1:
-            self.skills_tab.load()
+            self.skills_tab.load(animate=True)
         elif i == 2:
             self.settings_tab.load()
 
@@ -1795,13 +1796,13 @@ class MainWindow(QMainWindow):
     def toast(self, msg, ms=2600):
         t = self.toast_label
         t.setText(msg)
-        t.setStyleSheet(f"background:{C('model')};color:#1e1e3c;padding:8px 16px;border-radius:8px")
+        t.setObjectName("toast")
         t.adjustSize()
         t.move((self.width() - t.width()) // 2, self.height() - t.height() - 24)
         t.show()
         t.raise_()
-        slide_in(t)
-        QTimer.singleShot(ms, t.hide)
+        motion.enter(t, floating=True)
+        QTimer.singleShot(ms, lambda: motion.leave(t, done=t.hide))
 
     def export(self, d, fmt, with_steps):
         if not d:
@@ -1871,6 +1872,9 @@ def run():
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("自動化工作流")
     apply_font(app)
+    theme.apply(app)
+    app._menu_motion = motion.MenuMotion(app)
+    app.installEventFilter(app._menu_motion)
     w = MainWindow()
     w.show()
     return app.exec()
@@ -1893,6 +1897,9 @@ def self_test(outdir):
     threading.Thread(target=engine.scheduler_loop, daemon=True).start()
     app = QApplication.instance() or QApplication(sys.argv)
     apply_font(app)
+    theme.apply(app)
+    app._menu_motion = motion.MenuMotion(app)
+    app.installEventFilter(app._menu_motion)
     w = MainWindow()
     w.resize(1320, 880)
     w.show()
