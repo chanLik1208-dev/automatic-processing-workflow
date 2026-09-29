@@ -1424,9 +1424,7 @@ class SettingsTab(QScrollArea):
         self.s, self.fields, self.prov_rows, self.auto_rows = {}, {}, {}, []
 
     def load(self):
-        # 先偵測（訂閱的新模型會在這一步加進自動模式），再讀設定，才不會漏掉
-        self.b.get("/api/providers", lambda pr: (self.win.prov.update(pr or {}), self.b.get(
-            "/api/settings", lambda s: self.b.get("/api/usage", lambda u: self.build(s or {}, u or {})))))
+        self.b.get("/api/settings", lambda s: self.b.get("/api/usage", lambda u: self.build(s or {}, u or {})))
 
     def section(self, v, title, note=""):
         box = QFrame()
@@ -1765,6 +1763,7 @@ class SettingsTab(QScrollArea):
             out.setdefault("update", {})["new_token"] = self.up_token.text().strip()
         out["local_fallback"] = {"enabled": self.lf_on.isChecked(), "provider": self.lf_p.currentData(), "model": self.lf_m.text()}
         out["auto"] = {"cli_max_utilization": self.thr.value() / 100,
+                       "seen_models": (self.s.get("auto") or {}).get("seen_models", []),   # 載入後才自動加入的不算被刪
                        "order": [{"provider": r["p"].currentData(), "model": r["m"].currentText().strip(), "max_daily_tokens": r["tok"].value(),
                                   "max_daily_runs": r["runs"].value()} for r in self.auto_rows]}
         return out

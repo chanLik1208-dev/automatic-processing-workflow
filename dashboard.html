@@ -1381,8 +1381,7 @@ function autoRow(it) {
 }
 let auid = 0;
 async function loadSettings() {
-  PROV = await j("/api/providers");               // 先偵測（訂閱的新模型會在這一步加進自動模式），再讀設定，才不會漏掉
-  [SETTINGS, USAGE] = await Promise.all([j("/api/settings"), j("/api/usage")]);
+  [SETTINGS, PROV, USAGE] = await Promise.all([j("/api/settings"), j("/api/providers"), j("/api/usage")]);
   const s = SETTINGS;
   $("#st-form").innerHTML = `
     <div class="panel st-sec"><h3>模型來源</h3><div class="muted">工作流和構建器可以用的模型。停用的不會出現在選單裡。</div>
@@ -1452,6 +1451,7 @@ function collectSettings() {
   out.readable_paths = $("#st-paths").value.split("\n");
   out.local_fallback = {enabled: $("#lf-on").checked, provider: $("#lf-p").value, model: $("#lf-m").value};
   out.auto = {cli_max_utilization: Number($("#auto-thr").value) / 100,
+    seen_models: SETTINGS.auto?.seen_models || [],      // 這頁載入時看過的；之後才自動加入的模型不算被刪
     order: [...document.querySelectorAll("#auto-list .auto-row")].map(r => Object.fromEntries(
       [...r.querySelectorAll("[data-af]")].map(el => [el.dataset.af, el.type === "number" ? Number(el.value) : el.value])))};
   return out;

@@ -82,8 +82,18 @@ def save(body):
         thr = float(a.get("cli_max_utilization", 0.9))
         if not 0.1 <= thr <= 1:
             raise ValueError("訂閱額度門檻要在 10%–100% 之間")
-        # seen_models 要留著：使用者刪掉的自動加入模型，不會在下次偵測時又被加回來
-        raw["auto"] = {"order": order, "cli_max_utilization": thr, "seen_models": (raw.get("auto") or {}).get("seen_models", [])}
+        # seen_models 要留著：使用者刪掉的自動加入模型，不會在下次偵測時又被加回來。
+        # 但頁面打開「之後」才自動加進來的模型，使用者根本沒看到，不能當成他刪的：
+        # 頁面會送回它載入時看過的 seen_models，不在裡面的新模型照原本的列補回最後面。
+        cur = raw.get("auto") or {}
+        seen = cur.get("seen_models", [])
+        if isinstance(a.get("seen_models"), list):
+            known, have = set(a["seen_models"]), {(it["provider"], it["model"]) for it in order}
+            for it in cur.get("order", []):
+                k = f"{it.get('provider')}/{it.get('model') or ''}"
+                if k in seen and k not in known and (it.get("provider"), it.get("model") or "") not in have:
+                    order.append(it)
+        raw["auto"] = {"order": order, "cli_max_utilization": thr, "seen_models": seen}
 
     up = body.get("update") or {}
     if up.get("new_token"):
