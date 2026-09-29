@@ -55,7 +55,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install pyinstaller pywebview PySide6-Essentials
+      - run: pip install pyinstaller pywebview PySide6-Essentials truststore certifi
       - name: 發佈前檢查（設定、skill、匯出、排程鎖…；需要本地模型的項目在 CI 上會略過）
         run: python tests/run_checks.py
       - run: python build.py
@@ -86,6 +86,14 @@ jobs:
           $w = Invoke-RestMethod http://127.0.0.1:8799/api/workflows
           if ($w.Count -ne 3) { throw "預設工作流數量不對：$($w.Count)" }
           Stop-Process $p.Id
+
+      - name: HTTPS 測試（打包後的程式要認得憑證；之前打包版每個 HTTPS 都 CERTIFICATE_VERIFY_FAILED）
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # 查更新會用 urllib 連 api.github.com：憑證有問題這裡就會失敗（不能被略過）
+          AUTOWORKFLOW_HOME="$RUNNER_TEMP/https-home" "$(cat dist/test-bin.txt)" update --check
 
       - name: 介面自我測試（真的開出 Qt 介面，離屏、不需要螢幕；存截圖）
         shell: bash

@@ -79,6 +79,29 @@ def fix_path():
 
 
 fix_path()
+
+
+def fix_ssl():
+    """打包版內建的 OpenSSL 只會去編譯機上的路徑找憑證，在使用者電腦上找不到 → 每個 HTTPS 都 CERTIFICATE_VERIFY_FAILED。
+    改用系統自己的信任清單（truststore：macOS 鑰匙圈 / Windows 憑證存放區 / Linux 系統 CA，公司代理的憑證也認得）；
+    沒有 truststore 才退回 certifi 附的清單。skills 在同一個行程裡跑，這裡改一次全部生效。"""
+    try:
+        import truststore
+        truststore.inject_into_ssl()
+        return "truststore"
+    except Exception:
+        pass
+    if not os.environ.get("SSL_CERT_FILE"):
+        try:
+            import certifi
+            os.environ["SSL_CERT_FILE"] = certifi.where()
+            return "certifi"
+        except Exception:
+            pass
+    return None
+
+
+SSL_SOURCE = fix_ssl()
 DB_PATH = ROOT / "data" / "runs.db"
 
 
