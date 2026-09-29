@@ -35,6 +35,10 @@ import skill_admin     # noqa: E402
 results = []
 
 
+class Skip(Exception):
+    """外部服務（例如搜尋引擎）擋掉了，不是我們的程式壞了。"""
+
+
 def check(name, fn, skip=None):
     if skip:
         results.append(("略過", name, skip))
@@ -42,6 +46,8 @@ def check(name, fn, skip=None):
     try:
         detail = fn()
         results.append(("通過", name, detail or ""))
+    except Skip as e:
+        results.append(("略過", name, str(e)))
     except AssertionError as e:
         results.append(("失敗", name, str(e)))
     except Exception:
@@ -210,15 +216,25 @@ def t_scheduler_lock():
 
 
 # ---------------------------------------------------------------- 需要網路 / 本地模型
-def t_fetch_and_search():
+def t_fetch():
     sys.path.insert(0, str(HOME / "skills"))
-    import fetch_url, web_search
-    r = web_search.run("LM Studio")
-    assert r.count("http") >= 3, r[:200]
+    import fetch_url
     t = fetch_url.run("https://www.ctee.com.tw/news/20260820700837-430804")
     assert "開闔次選單" not in t and "OKX" in t, t[:200]
     assert fetch_url.run("file:///etc/hosts").startswith("只接受")
-    return "搜尋有結果；抓網頁只留正文；擋 file://"
+    return "抓網頁只留正文；擋 file://"
+
+
+def t_search():
+    sys.path.insert(0, str(HOME / "skills"))
+    import web_search
+    links = web_search._bing_url("https://www.bing.com/ck/a?!&&p=x&u=a1aHR0cHM6Ly9sbXN0dWRpby5haS8&ntb=1")
+    assert links == "https://lmstudio.ai/", links                    # Bing 轉址解碼（不需要網路）
+    r = web_search.run("LM Studio")
+    if "暫時擋了" in r:
+        raise Skip("DuckDuckGo 和 Bing 都擋了這台機器的請求（外部服務，不是程式問題）")
+    assert r.count("http") >= 3, r[:200]
+    return "有結果（" + r.rsplit("搜尋引擎：", 1)[-1].rstrip("）") + "）"
 
 
 def lm_ready(model):
@@ -319,7 +335,8 @@ def main():
     check("工具呼叫 JSON 解析", t_tool_json_parse)
     check("自動模式", t_auto_pick)
     check("排程鎖", t_scheduler_lock)
-    check("搜尋與抓網頁", t_fetch_and_search, skip=net)
+    check("抓網頁", t_fetch, skip=net)
+    check("搜尋", t_search, skip=net)
     check("匯出 Word / PDF", t_export)
     check("本地模型執行", lambda: t_local_run(a.model), skip=lm)
     check("本地備用", lambda: t_local_fallback(a.model), skip=lm)
