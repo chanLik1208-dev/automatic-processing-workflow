@@ -205,6 +205,8 @@ def init_db():
             input TEXT, output TEXT, ts REAL, ms INTEGER
         );
         """)
+        if "depth" not in {r[1] for r in c.execute("PRAGMA table_info(runs)")}:
+            c.execute("ALTER TABLE runs ADD COLUMN depth INTEGER")          # 舊資料庫：補上這次執行用的深度
         # 程式重啟時，上次沒跑完的標成 interrupted
         c.execute("UPDATE runs SET status='interrupted' WHERE status='running'")
 
@@ -251,7 +253,7 @@ def load_workflows():
 
 
 FIELD_ORDER = ["title", "description", "provider", "model", "fallback", "fallback_model", "enabled", "schedule",
-               "max_steps", "max_tokens", "skills", "system", "task"]
+               "max_steps", "max_tokens", "depth", "skills", "system", "task"]
 
 
 def validate_workflow(d):
@@ -288,6 +290,8 @@ def validate_workflow(d):
     wf["max_steps"] = max(1, min(40, int(d.get("max_steps") or 12)))
     if d.get("max_tokens"):
         wf["max_tokens"] = max(256, min(32768, int(d["max_tokens"])))
+    if d.get("depth") not in (None, "", DEPTH_DEFAULT):          # 標準就不寫進檔案（等於沒指定）
+        wf["depth"] = parse_depth(d["depth"])
     bad = [x for x in d.get("skills") or [] if x not in skills]
     if bad:
         raise ValueError(f"沒有這些 skill：{bad}")
@@ -619,17 +623,105 @@ def _parse_tool_json(text):
     return None
 
 
-CLI_ADAPTERS = {"claude"}                        # 實際測通過的；codex / gemini 等安裝後再接
+CLI_ADAPTERS = {"claude", "codex"}               # 實際測通過的；gemini 等安裝後再接
+# 不在 PATH 上、但常見的安裝位置（例如 ChatGPT 桌面版內附的 codex）
+CLI_BUNDLED = {"codex": ["/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+                         "/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
+                         "~/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"]}
+
+
+def cli_exe(p):
+    """CLI 的執行檔：PATH → 設定裡指定的路徑 → 常見的內附位置。找不到回傳空字串。"""
+    for c in [shutil.which(p["command"]), os.path.expanduser(p["path"]) if p.get("path") else None,
+              *[os.path.expanduser(x) for x in CLI_BUNDLED.get(p["command"], [])]]:
+        if c and os.path.exists(c):
+            return c
+    return ""
+
+
+_codex_models = {"at": 0, "list": []}
+
+
+def codex_models(exe):
+    """codex 自己回報目前帳號能用的模型（只取會列在選單裡的）；一小時問一次。"""
+    if time.time() - _codex_models["at"] < 3600:
+        return _codex_models["list"]
+    try:
+        out = subprocess.run([exe, "debug", "models"], capture_output=True, text=True, encoding="utf-8", timeout=20).stdout
+        data = json.loads(out[out.find("{"):])
+        _codex_models["list"] = [m["slug"] for m in data.get("models", []) if m.get("visibility") == "list" and m.get("slug")]
+    except Exception:
+        pass
+    _codex_models["at"] = time.time()
+    return _codex_models["list"]
+
+
+def chat_codex(p, model, messages, tools, live, timeout=600):
+    """ChatGPT 訂閱（codex exec）。codex 本身是會跑指令的 agent：放在空資料夾、唯讀沙盒、
+    不載入使用者設定 / 規則 / MCP、不存對話紀錄；工具一律照 TOOL_PROTOCOL 用 JSON 回給我們自己執行。"""
+    system = messages[0]["content"]
+    if tools:
+        system += TOOL_PROTOCOL.format(specs=json.dumps([t["function"] for t in tools], ensure_ascii=False, indent=1))
+    system += "\n\n不要執行任何 shell 指令或讀寫檔案；需要資料就照上面的格式呼叫提供給你的工具。"
+    cmd = [cli_exe(p), "exec", "--json", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+           "-s", "read-only", "--color", "never"]
+    if model:
+        cmd += ["-m", model]
+    cmd.append("-")                                    # 提示從標準輸入讀（沒有長度限制，也沒有系統提示參數）
+    tmp = tempfile.mkdtemp(prefix="wf-cli-")
+    proc = subprocess.Popen(cmd, cwd=tmp, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8")
+    live["_proc"] = proc
+    killer = threading.Timer(timeout, proc.kill)
+    killer.start()
+    text, thinking, usage, err = "", "", {}, None
+    try:
+        proc.stdin.write(f"## 系統指示（嚴格遵守）\n{system}\n\n" + _transcript(messages))
+        proc.stdin.close()
+        live.update(phase="thinking")
+        for line in proc.stdout:
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            t, item = e.get("type"), e.get("item") or {}
+            live["last_token"] = time.time()
+            if t == "item.completed" and item.get("type") == "agent_message":
+                text = item.get("text") or ""
+                if '"tool_calls"' in text or text.lstrip().startswith("{"):
+                    live.update(phase="deciding", tool={"name": "", "args": ""})
+                else:
+                    live.update(phase="writing", content=text)
+            elif item.get("type") == "reasoning" and item.get("text"):
+                thinking = (thinking + "\n" + item["text"]).strip() if t == "item.completed" else thinking
+                live.update(phase="thinking", reasoning=thinking)
+            elif t == "turn.completed":
+                usage = e.get("usage") or {}
+            elif t in ("turn.failed", "error"):
+                err = (e.get("error") or {}).get("message") if isinstance(e.get("error"), dict) else e.get("message") or str(e)
+        proc.wait()
+    finally:
+        killer.cancel()
+        live.pop("_proc", None)
+        shutil.rmtree(tmp, ignore_errors=True)
+    if live.get("run_id") in _cancel:
+        raise Cancelled()
+    if err or proc.returncode:
+        raise RuntimeError(f"codex 執行失敗：{err or proc.stderr.read()[-400:] or proc.returncode}")
+    return text, thinking, {"prompt_tokens": usage.get("input_tokens", 0), "completion_tokens": usage.get("output_tokens", 0)}
 
 
 def chat_cli(p, model, messages, tools, live, timeout=600):
     if p.get("adapter") not in CLI_ADAPTERS:
         raise RuntimeError(f"{p.get('label') or p['command']} 的串接還沒完成")
+    if p.get("adapter") == "codex":
+        text, thinking, usage = chat_codex(p, model, messages, tools, live, timeout)
+        return _cli_reply(p, model or "", text, thinking, tools, usage)
     system = messages[0]["content"]
     if tools:
         system += TOOL_PROTOCOL.format(specs=json.dumps([t["function"] for t in tools], ensure_ascii=False, indent=1))
     model = model or p["default_model"]
-    cmd = [shutil.which(p["command"]) or os.path.expanduser(p["path"]),
+    cmd = [cli_exe(p),
            "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
            "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--setting-sources", "project",
            "--model", model]
@@ -681,6 +773,13 @@ def chat_cli(p, model, messages, tools, live, timeout=600):
     if err or proc.returncode:
         raise RuntimeError(f"{p['command']} 執行失敗：{err or proc.stderr.read()[-400:] or proc.returncode}")
     text = result if isinstance(result, str) and result else text
+    return _cli_reply(p, model, text, thinking, tools,
+                      {"prompt_tokens": usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0),
+                       "completion_tokens": usage.get("output_tokens", 0)})
+
+
+def _cli_reply(p, model, text, thinking, tools, usage):
+    """CLI 的文字回覆 → OpenAI chat completion 格式；工具呼叫從 JSON 解析出來。"""
     parsed = _parse_tool_json(text) if tools else None
     msg = {"role": "assistant", "content": text, "reasoning_content": thinking}
     if parsed:
@@ -690,9 +789,7 @@ def chat_cli(p, model, messages, tools, live, timeout=600):
                              for i, c in enumerate(parsed["tool_calls"])]
     if not msg.get("content") and not msg.get("tool_calls"):
         raise ModelBroken(f"{p['command']} 沒有回傳任何內容。")
-    return {"model": model, "choices": [{"message": msg}],
-            "usage": {"prompt_tokens": usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0),
-                      "completion_tokens": usage.get("output_tokens", 0)}}
+    return {"model": model, "choices": [{"message": msg}], "usage": usage}
 
 
 def _loaded_model(p):
@@ -737,6 +834,27 @@ def cli_limits():
         return {}
 
 
+def mkey(provider, model):
+    """(來源, 模型)：留空的模型換成那個來源的預設模型，這樣「留空」和明寫預設值算同一個（Sonnet 和 Opus 不同）。"""
+    p = load_config()["providers"].get(provider) or {}
+    return provider, (model or p.get("default_model") or "")
+
+
+def usage_by_model(since=None):
+    """今天（或 since 之後）每個 (來源, 模型) 的 token 和執行次數；key 是 "來源/模型"。"""
+    since = since or datetime.datetime.combine(datetime.date.today(), datetime.time()).timestamp()
+    with db() as c:
+        rows = c.execute("SELECT provider, model, COUNT(*), SUM(tokens_in), SUM(tokens_out) FROM runs WHERE started >= ? "
+                         "GROUP BY provider, model", (since,)).fetchall()
+    out = {}
+    for prov, model, n, tin, tout in rows:
+        k = "/".join(mkey(prov, model))
+        o = out.setdefault(k, {"runs": 0, "tokens": 0})
+        o["runs"] += n
+        o["tokens"] += (tin or 0) + (tout or 0)
+    return out
+
+
 def usage(provider=None, since=None):
     """某段時間內各模型來源的 token 和執行次數（從執行紀錄算）。"""
     since = since or datetime.datetime.combine(datetime.date.today(), datetime.time()).timestamp()
@@ -747,19 +865,50 @@ def usage(provider=None, since=None):
     return out.get(provider, {"runs": 0, "tokens": 0}) if provider else out
 
 
+QUOTA_WINDOW = {"five_hour": "5 小時", "seven_day": "7 天"}
+QUOTA_MODELS = ("opus", "sonnet", "haiku")
+
+
+def quota_windows(provider, model=None):
+    """訂閱的額度視窗（還沒重置的）：[{window, label, utilization, resetsAt, rejected}]。
+    Claude 回報的是 unifiedWindows（5 小時、7 天，可能還有只算某個模型的，例如 seven_day_opus）；
+    只算某模型的視窗只套用在那個模型。model=None：只看整個帳號共用的視窗。"""
+    info = cli_limits().get(provider) or {}
+    now, m = time.time(), (mkey(provider, model)[1] or "").lower() if model is not None else None
+    wins = dict(info.get("unifiedWindows") or {})
+    if not wins and info.get("rateLimitType"):                   # 舊格式：只有一個視窗
+        wins[info["rateLimitType"]] = {"utilization": info.get("utilization"), "resetsAt": info.get("resetsAt")}
+    out = []
+    for w, v in wins.items():
+        only = next((x for x in QUOTA_MODELS if x in w), None)
+        if only and (m is None or only not in m):
+            continue
+        if not v or (v.get("resetsAt") or 0) <= now:
+            continue
+        base = w.replace(f"_{only}", "") if only else w
+        out.append({"window": w, "label": QUOTA_WINDOW.get(base, base) + (f"（{only.capitalize()}）" if only else ""),
+                    "utilization": v.get("utilization"), "resetsAt": v["resetsAt"],
+                    "rejected": info.get("status") == "rejected" and info.get("rateLimitType") == w})
+    return out
+
+
+def quota_summary(provider, model=None):
+    """用得最兇的那個視窗（顯示用）；沒有資料回傳 None。"""
+    ws = [w for w in quota_windows(provider, model) if w["utilization"] is not None or w["rejected"]]
+    return max(ws, key=lambda w: (w["rejected"], w["utilization"] or 0)) if ws else None
+
+
 def _limit_block(name, p_cfg):
-    """這個來源現在該不該跳過；要跳過就回傳原因。"""
-    info = cli_limits().get(name)
-    if info and info.get("resetsAt", 0) > time.time():
-        util = info.get("utilization")
-        thr = cfg("auto.cli_max_utilization", 0.9)
-        when = datetime.datetime.fromtimestamp(info["resetsAt"]).strftime("%H:%M")
-        win = {"five_hour": "5 小時", "seven_day": "7 天"}.get(info.get("rateLimitType"), "")
-        if info.get("status") == "rejected":
-            return f"{win}額度已用完（{when} 重置）"
-        if util is not None and util >= thr:
-            return f"{win}額度已用 {util:.0%}，超過設定的 {thr:.0%}（{when} 重置）"
-    u = usage(name)
+    """這個 (來源, 模型) 現在該不該跳過；要跳過就回傳原因。
+    訂閱額度：帳號共用的視窗對所有模型都算，只算某模型的視窗（例如 Opus 的 7 天額度）只擋那個模型；每日上限每個模型各算各的。"""
+    thr = cfg("auto.cli_max_utilization", 0.9)
+    for w in quota_windows(name, p_cfg.get("model") or ""):
+        when = datetime.datetime.fromtimestamp(w["resetsAt"]).strftime("%m/%d %H:%M")
+        if w["rejected"]:
+            return f"{w['label']}額度已用完（{when} 重置）"
+        if w["utilization"] is not None and w["utilization"] >= thr:
+            return f"{w['label']}額度已用 {w['utilization']:.0%}，超過設定的 {thr:.0%}（{when} 重置）"
+    u = usage_by_model().get("/".join(mkey(name, p_cfg.get("model"))), {"runs": 0, "tokens": 0})
     if p_cfg.get("max_daily_tokens") and u["tokens"] >= p_cfg["max_daily_tokens"]:
         return f"今天已用 {u['tokens']:,} tokens，達到上限 {p_cfg['max_daily_tokens']:,}"
     if p_cfg.get("max_daily_runs") and u["runs"] >= p_cfg["max_daily_runs"]:
@@ -783,15 +932,17 @@ def local_fallback():
 
 
 def pick_auto(tried=()):
-    """照優先順序挑一個能用的來源；回傳 (provider, model, 說明)。"""
+    """照優先順序挑一個能用的 (來源, 模型)；回傳 (provider, model, 說明)。
+    tried 是已經用過的 (來源, 模型)：同一個來源的其他模型還是可以選（Opus 出錯可以換 Sonnet）。"""
     providers = load_config()["providers"]
     skipped = []
     for item in cfg("auto.order", []):
         name = item.get("provider")
         p = providers.get(name)
-        if not p or name in tried:
+        if not p or mkey(name, item.get("model")) in tried:
             continue
-        label = p.get("label") or name
+        m = mkey(name, item.get("model"))[1]
+        label = (p.get("label") or name) + (f" {m}" if m else "")
         if not p.get("enabled", True):
             skipped.append(f"{label}：已停用")
             continue
@@ -808,12 +959,46 @@ def pick_auto(tried=()):
     raise RuntimeError("自動模式找不到能用的模型來源：" + ("；".join(skipped) or "設定裡的優先順序是空的"))
 
 
+DISCOVERS_MODELS = {"codex", "claude"}             # 訂閱：每個模型自動各加一列到自動模式（codex 自己回報、claude 用設定裡的清單）
+_sync_lock = threading.Lock()
+
+
+def sync_auto_models(status):
+    """訂閱回報了新模型（例如 ChatGPT 多了一顆 GPT）：每個模型各自加進自動模式優先順序的最後面，優先級獨立。
+    只加「第一次看到」的：使用者刪掉的那列不會再被加回來，已經排好的順序也不動。回傳這次加了哪些。"""
+    conf = load_config()
+    added = []
+    with _sync_lock:
+        raw = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
+        auto = raw.setdefault("auto", {})
+        order = auto.get("order", conf["auto"]["order"])
+        seen = set(auto.get("seen_models", []))
+        have = {mkey(it["provider"], it.get("model")) for it in order}
+        for name, st in status.items():
+            p = conf["providers"].get(name) or {}
+            if p.get("adapter") not in DISCOVERS_MODELS or not st.get("ok"):
+                continue
+            for m in st.get("models") or []:
+                if f"{name}/{m}" in seen:
+                    continue
+                seen.add(f"{name}/{m}")
+                if mkey(name, m) not in have:
+                    order.append({"provider": name, "model": m, "max_daily_tokens": 0, "max_daily_runs": 0})
+                    have.add(mkey(name, m))
+                    added.append(f"{p.get('label') or name} {m}")
+        if added or seen != set(auto.get("seen_models", [])):
+            auto["order"], auto["seen_models"] = order, sorted(seen)
+            save_config(raw)
+    return added
+
+
 def ping_provider(name):
     try:
         p = provider_conf(name)
         if p.get("type") == "cli":
-            exe = shutil.which(p["command"]) or (os.path.expanduser(p["path"]) if p.get("path") else "")
-            info = {"kind": "cli", "label": p.get("label"), "default_model": p["default_model"], "models": p.get("models", [])}
+            exe = cli_exe(p)
+            models = p.get("models", []) + (codex_models(exe) if exe and p.get("adapter") == "codex" else [])
+            info = {"kind": "cli", "label": p.get("label"), "default_model": p["default_model"], "models": list(dict.fromkeys(models))}
             if not exe or not os.path.exists(exe):
                 plat = "win32" if sys.platform == "win32" else "darwin" if sys.platform == "darwin" else "linux"
                 return {**info, "ok": False, "missing": True, "error": f"沒有安裝 {p['command']}",
@@ -855,9 +1040,61 @@ def strip_think(text):
 
 # ---------- Agent 迴圈 ----------
 
-def run_workflow(name, trigger="manual", extra_input="", wf=None):
+# ---------------------------------------------------------------- 篇幅與深度（類似 effort 的滑桿）
+# 3「標準」= 照工作流原本的寫法，什麼都不加；往兩邊才加指示。深入以上同時放寬輪數和單輪輸出，免得寫到一半被截斷。
+DEPTH_DEFAULT = 3
+DEPTH = {
+    # note：篇幅和結構；sources：只有工作流能上網查資料時才加（沒有工具還要求「讀 6–10 個來源」，模型會編造出處）
+    1: {"label": "簡短", "hint": "約 200–400 字，只講結論",
+        "note": "最後的回覆盡量短：約 200–400 字，只講結論和最重要的 2–3 點，不寫背景和細節。",
+        "sources": "資料夠下結論就停，不用多讀來源（1–2 個就好）。"},
+    2: {"label": "精簡", "hint": "約 500–800 字，重點條列",
+        "note": "最後的回覆精簡：約 500–800 字，重點條列、每點一兩句說明，省略次要細節。",
+        "sources": "讀 2–3 個來源就好。"},
+    3: {"label": "標準", "hint": "照工作流原本的寫法", "note": None},
+    4: {"label": "深入", "hint": "約 1500–3000 字，交叉比對", "steps": 6, "tokens": 8192,
+        "note": "最後的回覆要深入：約 1500–3000 字，分段加小標題。不只摘要，要交代背景、原因和影響，指出還不確定的地方。",
+        "sources": "至少讀 4–6 個來源，比較不同來源的說法，重要的說法要交叉比對。"},
+    5: {"label": "詳盡", "hint": "約 3000–6000 字的完整報告", "steps": 12, "tokens": 16384,
+        "note": "最後的回覆寫成完整的報告：約 3000–6000 字，分章節加小標題，依序是摘要、背景、分面向的深入分析、"
+                "各方觀點比較、數據與證據、風險與限制、結論與建議。",
+        "sources": "讀 6–10 個來源，盡量包含一手資料（官方文件、原始公告、論文），每個關鍵說法都標出處。"},
+}
+RESEARCH_SKILLS = {"web_search", "fetch_url", "read_rss", "github_repo"}
+
+
+def parse_depth(v):
+    try:
+        v = int(v)
+    except (TypeError, ValueError):
+        raise ValueError("深度要是 1–5")
+    if v not in DEPTH:
+        raise ValueError("深度要是 1–5")
+    return v
+
+
+def apply_depth(wf, level, can_research=True):
+    """依深度調整這次執行的輪數和單輪輸出（只放寬、不收緊），回傳要附在任務後面的指示（標準回傳 None）。
+    can_research：工作流有沒有上網查資料的能力；沒有就不要求來源數量，改成明講不准編出處。"""
+    d = DEPTH[level]
+    if d.get("steps"):
+        wf["max_steps"] = min(40, wf["max_steps"] + d["steps"])
+    if d.get("tokens"):
+        wf["max_tokens"] = min(32768, max(wf.get("max_tokens") or cfg("limits.max_tokens", 4096), d["tokens"]))
+    if not d["note"]:
+        return None
+    src = d["sources"] if can_research else ("這個工作流沒有上網查資料的工具：只寫你確定的內容，"
+                                             "不要列出你沒有實際讀過的來源或引用，不確定的地方直接說不確定。")
+    return (f"【篇幅與深度：{d['label']}（使用者指定）】{d['note']}{src}\n"
+            "這個指定優先於上面任務說明裡關於篇幅、來源數量的要求。"
+            "如果這個工作流不是在寫文章或報告（例如只是檢查狀態、有問題才通知），忽略這段。")
+
+
+def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None):
     wf = dict(wf) if wf else load_workflows()[name]
     wf.setdefault("max_steps", cfg("limits.max_steps", 12))
+    level = parse_depth(depth) if depth not in (None, "") else wf.get("depth", DEPTH_DEFAULT)
+    depth_note = apply_depth(wf, level, bool(RESEARCH_SKILLS & set(wf.get("skills", []))))
     skills = load_skills()
     allowed = [s for s in wf.get("skills", []) if s in skills]
     tools = [{"type": "function", "function": skills[s].SPEC} for s in allowed]
@@ -874,6 +1111,8 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None):
         task = f"（這個工作流的說明：{wf['description']}）\n\n{task}"
     if extra_input:
         task += f"\n\n額外輸入：{extra_input}"
+    if depth_note:
+        task += f"\n\n{depth_note}"
     messages = [{"role": "system", "content": system}, {"role": "user", "content": task}]
 
     auto = wf.get("provider") == "auto"
@@ -885,21 +1124,21 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None):
             provider, model, auto_note = "auto", None, str(e)
     else:
         provider, model = wf.get("provider", "lmstudio"), wf.get("model")
-    run_id = _exec("INSERT INTO runs (workflow, provider, model, trigger, status, started, input) VALUES (?,?,?,?,?,?,?)",
-                   (name, provider, model or "", trigger, "running", time.time(), task))
+    run_id = _exec("INSERT INTO runs (workflow, provider, model, trigger, status, started, input, depth) VALUES (?,?,?,?,?,?,?,?)",
+                   (name, provider, model or "", trigger, "running", time.time(), task, level))
     idx, tin, tout = 0, 0, 0
     live = LIVE[run_id] = {"run_id": run_id, "workflow": name, "title": wf.get("title", name),
                            "started": time.time(), "round": 0, "provider": provider, "model": model or ""}
 
     fails, first_err = 0, None
-    used = {provider}                                  # 這次執行用過的來源，不會重複換回去
+    used = {mkey(provider, model)}                     # 這次執行用過的 (來源, 模型)，不會重複換回去
     if auto_note:
         add_step(run_id, idx, "note", "auto", "", auto_note)
         idx += 1
     lf = local_fallback()
     if provider == "auto" and lf:                      # 自動模式一個都挑不到：直接用本地備用
         provider, model = lf
-        used.add(provider)
+        used.add(mkey(provider, model))
         add_step(run_id, idx, "note", "local", "", f"改用本地備用 {provider_label(provider)}")
         idx += 1
         _exec("UPDATE runs SET provider=?, model=? WHERE id=?", (provider, model or "", run_id))
@@ -921,20 +1160,20 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None):
                 fb = wf.get("fallback")
                 first_err = first_err or str(e)
                 fb_model, how = wf.get("fallback_model"), "備援"
-                if auto:                                      # 自動模式：換優先順序裡的下一個
-                    tried.append(provider)
+                if auto:                                      # 自動模式：換優先順序裡的下一個（同來源的別的模型也算）
+                    tried.append(mkey(provider, model))
                     try:
                         fb, fb_model, _ = pick_auto(tuple(used) + tuple(tried))
                     except RuntimeError:
                         fb = None
-                if not fb or fb in used:                      # 前面都沒得換：最後試本地備用
+                if not fb or mkey(fb, fb_model) in used:       # 前面都沒得換：最後試本地備用
                     lf = local_fallback()
-                    fb, fb_model, how = (lf[0], lf[1], "本地備用") if lf and lf[0] not in used else (None, None, "")
-                if fb and fb not in used:
+                    fb, fb_model, how = (lf[0], lf[1], "本地備用") if lf and mkey(*lf) not in used else (None, None, "")
+                if fb and mkey(fb, fb_model) not in used:
                     raw = live.pop("_raw", None)
                     add_step(run_id, idx, "error", provider, json.dumps({"raw": raw}, ensure_ascii=False) if raw else "",
-                             f"{e}\n→ 改用{how} {fb}"); idx += 1
-                    used.add(fb)
+                             f"{e}\n→ 改用{how} {fb}{' ' + fb_model if fb_model else ''}"); idx += 1
+                    used.add(mkey(fb, fb_model))
                     provider, model = fb, fb_model
                     _exec("UPDATE runs SET provider=?, model=? WHERE id=?", (provider, model or "", run_id))
                     continue
@@ -1026,7 +1265,9 @@ _running = set()
 _running_lock = threading.Lock()
 
 
-def start_async(name, trigger="manual", extra_input="", wf=None):
+def start_async(name, trigger="manual", extra_input="", wf=None, depth=None):
+    if depth not in (None, ""):
+        parse_depth(depth)                                   # 先檢查，錯了直接回 400，不要開了執行緒才失敗
     with _running_lock:
         if name in _running:
             return False
@@ -1034,7 +1275,7 @@ def start_async(name, trigger="manual", extra_input="", wf=None):
 
     def job():
         try:
-            run_workflow(name, trigger, extra_input, wf)
+            run_workflow(name, trigger, extra_input, wf, depth)
         finally:
             _running.discard(name)
     threading.Thread(target=job, daemon=True).start()
@@ -1067,6 +1308,15 @@ def scheduler_loop():
     if not acquire_scheduler_lock():
         print(f"另一個程式已經在跑 {ROOT} 的排程，這裡就不重複跑了（手動執行照常可用）。")
         return
+
+    def discover():                                    # 啟動時看一次訂閱有沒有新模型（無頭模式沒有介面在輪詢）
+        try:
+            names = [n for n, p in load_config()["providers"].items()
+                     if p.get("enabled", True) and p.get("adapter") in DISCOVERS_MODELS]
+            sync_auto_models({n: ping_provider(n) for n in names})
+        except Exception:
+            pass
+    threading.Thread(target=discover, daemon=True).start()
     while True:
         tick = max(5, int(cfg("tick_seconds", 30)))
         try:

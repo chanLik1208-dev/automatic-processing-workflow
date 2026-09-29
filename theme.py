@@ -100,6 +100,11 @@ def stylesheet():
     QListWidget::item {{ border:none; }}
     QProgressBar {{ background:{t['tint']}; border:none; border-radius:3px; max-height:5px; }}
     QProgressBar::chunk {{ background:{t['run']}; border-radius:3px; }}
+    QSlider::groove:horizontal {{ height:4px; background:{t['line']}; border-radius:2px; }}
+    QSlider::sub-page:horizontal {{ background:{t['run']}; border-radius:2px; }}
+    QSlider::handle:horizontal {{ background:{t['accent']}; border:2px solid {t['panel']}; width:14px; height:14px;
+        margin:-7px 0; border-radius:9px; }}
+    QSlider::handle:horizontal:hover {{ background:#d9d9ff; }}
     QSplitter::handle {{ background:transparent; width:14px; }}
 
     QScrollBar:vertical {{ background:transparent; width:10px; margin:2px; }}

@@ -136,7 +136,7 @@ def cmd_run(args):
         if args.model:
             wf["model"] = args.model
     result = {}
-    t = threading.Thread(target=lambda: result.update(id=engine.run_workflow(name, "cli", args.input or "", wf)), daemon=True)
+    t = threading.Thread(target=lambda: result.update(id=engine.run_workflow(name, "cli", args.input or "", wf, args.depth)), daemon=True)
     t.start()
     while "id" not in result and not engine.LIVE:
         time.sleep(0.1)
@@ -211,6 +211,8 @@ def main():
     r.add_argument("--input", "-i", help="額外輸入（手動執行時的那段文字）")
     r.add_argument("--provider", help="這次改用哪個模型來源（例如 claude、lmstudio）")
     r.add_argument("--model", help="這次改用哪個模型")
+    r.add_argument("--depth", type=int, choices=range(1, 6), metavar="1-5",
+                   help="篇幅與深度：1 簡短、2 精簡、3 標準（照工作流原本的寫法）、4 深入、5 詳盡")
     r.add_argument("--json", action="store_true", help="結果用 JSON 輸出（方便接其他程式）")
     r.add_argument("--quiet", "-q", action="store_true", help="不印進度，只印結果")
     sub.add_parser("list", help="列出工作流和 skill")

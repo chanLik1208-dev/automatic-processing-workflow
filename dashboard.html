@@ -133,6 +133,20 @@ textarea { width: 100%; resize: vertical; line-height: 1.6; }
 .switch input:checked + .tr { background: var(--ok); }
 .switch input:checked + .tr::after { transform: translateX(14px); }
 .bar .runin { width: 220px; }
+.depth { display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--soft); white-space: nowrap; }
+.depth input[type=range] { width: 110px; accent-color: var(--run); margin: 0; cursor: pointer; }
+.depth b { color: var(--ink); font-weight: 600; min-width: 2.2em; }
+.depth .dh { color: var(--muted); font-size: 12.5px; white-space: normal; }
+.depth-btn b { font-weight: 600; color: var(--ink); }
+.depth-pop { padding: 8px 10px 6px; display: grid; gap: 8px; }
+.depth-pop .dp-h { font-weight: 600; font-size: 14px; }
+.depth-pop input[type=range] { width: 100%; accent-color: var(--run); margin: 4px 0 0; cursor: pointer; }
+.dp-ticks { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--muted); margin-top: -4px; }
+.dp-ticks span { cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: color var(--d-lumin) var(--e-out); }
+.dp-ticks span:hover { color: var(--ink); }
+.dp-ticks span.on { color: var(--ink); font-weight: 600; }
+.depth-pop .dh { font-size: 13.5px; color: var(--soft); }
+.depth-pop .dp-note { font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 6px; }
 @media (max-width: 760px) { .bar .runin { width: 100%; order: 5; } .dd-btn { min-width: 0; } }
 
 /* ── 現在 ── */
@@ -366,6 +380,7 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
         <select name="model"></select>
       </div></div>
       <div class="row"><label>連不上時</label><div class="inl"><select name="fallback"></select><select name="fallback_model"></select></div></div>
+      <div class="row"><label>篇幅與深度</label><div id="ed-depth"></div></div>
       <div class="row"><label>能做的事</label><div class="skills" id="ed-skills"></div></div>
       <div class="row"><label>任務說明</label><div>
         <textarea name="task" rows="8" placeholder="一步一步寫清楚要做什麼、每步用哪個能力、什麼情況才通知"></textarea>
@@ -438,6 +453,7 @@ function settle(el) {                                // 動畫結束後把 fill 
 }
 
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let DEPTH = [], runDepth = {};                  // 篇幅與深度的等級；runDepth：這次執行臨時調的（只在這個工作流、這次）
 let WF = {}, WFS = [], PROV = {}, SKILLS = [], selWf = null, selRun = null, showAll = false, lastSig = {}, editing = null;
 
 // ── 白話化 ─────────────────────────────────────────
@@ -449,11 +465,25 @@ const provLabel = p => PROV[p]?.label || SETTINGS?.providers?.[p]?.label || PROV
 function modelName(id, provider) {
   if (provider === "auto") return "自動模式";
   id = id || PROV[provider]?.default_model || "";
-  const m = id.match(/^([a-z]+)([\d.]*)[-_]?(\d+(?:\.\d+)?b)?/i);
   let name = id;
+  const cap = w => w.charAt(0).toUpperCase() + w.slice(1);
   if (/^deepseek-chat/.test(id)) name = "DeepSeek V3";
   else if (/^deepseek-reasoner/.test(id)) name = "DeepSeek R1";
-  else if (m) name = m[1][0].toUpperCase() + m[1].slice(1) + (m[2] || "") + (m[3] ? " " + m[3].toUpperCase() : "");
+  // 訂閱的模型要分得出來：GPT-6-Luna 和 GPT-5.6-Terra 不能都縮成「Gpt」
+  else if (/^gpt-/i.test(id)) name = "GPT-" + id.slice(4).split("-").map(cap).join("-");
+  else if (/^(sonnet|opus|haiku)$/i.test(id)) name = "Claude " + cap(id.toLowerCase());
+  else if (/^claude-[a-z]+-\d+(-\d{1,2})?(-\d{8})?$/i.test(id)) {       // claude-opus-4-8 → Claude Opus 4.8
+    const [, fam, a, b] = id.match(/^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?/i);
+    name = `Claude ${cap(fam)} ${a}${b ? "." + b : ""}`;
+  }
+  else if (/^(claude|gemini)-/i.test(id)) name = id.split("-").map(cap).join(" ");
+  else {
+    // 本機模型：名字 + 版本 + 大小（qwen3.5-35b-a3b → Qwen3.5 35B-A3B、gemma-4-e2b → Gemma 4 E2B）；
+    // 縮不出版本或大小就顯示完整 ID，不同模型才不會變成同一個名字
+    const g = id.match(/^([a-z]+)([\d.]*)(?:[-_](\d+(?:\.\d+)?)(?=[-_]|$))?(?:[-_]((?:e?\d+(?:\.\d+)?b)(?:-a\d+b)?))?/i);
+    name = g && (g[2] || g[3] || g[4]) ? cap(g[1]) + (g[2] || "") + (g[3] ? " " + g[3] : "") + (g[4] ? " " + g[4].toUpperCase() : "")
+         : id.length > 40 ? id.slice(0, 24) + "…" + id.slice(-15) : id;          // 頭尾都留：差別常在結尾（@q4_k / @bf16）
+  }
   return name ? `${name}（${provLabel(provider)}）` : provLabel(provider);
 }
 function dur(sec) {
@@ -591,8 +621,7 @@ function renderSummary(runs) {
   const ok = t.filter(r => r.status === "success").length, bad = t.filter(r => r.status === "failed").length;
   const next = WFS.filter(w => w.next_due && w.enabled).sort((a, b) => a.next_due - b.next_due)[0];
   const running = WFS.filter(w => w.running);
-  const quota = n => { const q = USAGE?.cli_limits?.[n]; return q && q.resetsAt * 1000 > Date.now() && q.utilization != null
-    ? `（${{five_hour: "5 小時", seven_day: "7 天"}[q.rateLimitType] || ""}額度 ${Math.round(q.utilization * 100)}%）` : ""; };
+  const quota = n => { const q = USAGE?.quota?.[n]; return q ? `（${q.label}額度 ${Math.round((q.utilization || 0) * 100)}%）` : ""; };
   const okList = Object.entries(PROV).filter(([, v]) => v.ok);
   const p = okList.length ? "可用模型：" + okList.map(([n]) => `<span class="${/9\d%|100%/.test(quota(n)) ? "warn-text" : "ok-text"}">${esc(provLabel(n))}${quota(n)}</span>`).join("、") : "";
   const off = Object.values(PROV).filter(v => !v.ok).length;
@@ -656,10 +685,50 @@ function renderBar() {
   $("#wf-actions").innerHTML =
     (manual ? "" : `<label class="switch" title="開關排程"><input type="checkbox" data-enable ${w.enabled ? "checked" : ""}><span class="tr"></span>排程</label>`) +
     (manual ? `<input type="text" class="runin" placeholder="要處理什麼？" value="${esc(keep)}">` : "") +
+    (w.running ? "" : depthMenu(runDepth[selWf] ?? w.depth ?? 3)) +
     (w.running ? `<button class="ghost" data-stop style="color:var(--bad)">停止</button>` : `<button data-run>立即執行</button>`);
   $("#more-menu").innerHTML = `<span class="plain" data-act="edit">編輯設定</span><span class="plain" data-act="new">＋ 新增工作流</span>
     <div class="sep"></div><span class="plain danger" data-act="delete">刪除這條工作流</span>`;
 }
+
+function depthInfo(v) { return DEPTH.find(d => d.level === +v) || {label: "標準", hint: ""}; }
+function depthSlider(v, cls, hint) {
+  const d = depthInfo(v);
+  return `<label class="depth" title="${esc(d.hint)}">篇幅<input type="range" class="${cls}" min="1" max="5" step="1" value="${v}"><b>${esc(d.label)}</b>${hint ? `<span class="dh">${esc(d.hint)}</span>` : ""}</label>`;
+}
+// 執行列：獨立的二級選單，按鈕只顯示目前等級，滑桿在選單裡
+function depthMenu(v) {
+  const d = depthInfo(v);
+  return `<div class="dd"><button class="ghost depth-btn" data-toggle="depth-menu" title="篇幅與深度：${esc(d.hint)}">篇幅 <b>${esc(d.label)}</b> ▾</button>
+    <div class="menu right" id="depth-menu" style="min-width:300px"><div class="mi depth-pop">
+      <div class="dp-h">篇幅與深度</div>
+      <input type="range" class="run-depth" min="1" max="5" step="1" value="${v}" aria-label="篇幅與深度">
+      <div class="dp-ticks">${DEPTH.map(x => `<span data-depth-tick="${x.level}" class="${x.level === +v ? "on" : ""}">${esc(x.label)}</span>`).join("")}</div>
+      <div class="dh">${esc(d.hint)}</div>
+      <div class="dp-note">只套用在下一次執行；平常的預設在「編輯設定」改。</div>
+    </div></div></div>`;
+}
+function syncDepth(input) {
+  const d = depthInfo(input.value), box = input.closest(".depth, .depth-pop");
+  const name = input.closest(".depth") ? box.querySelector("b") : input.closest(".dd").querySelector(".depth-btn b");
+  name.textContent = d.label;
+  const h = box.querySelector(".dh"); if (h) h.textContent = d.hint;
+  box.querySelectorAll("[data-depth-tick]").forEach(t => t.classList.toggle("on", +t.dataset.depthTick === +input.value));
+  if (input.classList.contains("run-depth") && selWf) runDepth[selWf] = +input.value;
+}
+document.addEventListener("input", e => { if (e.target.matches?.(".depth input[type=range], .depth-pop input[type=range]")) syncDepth(e.target); });
+document.addEventListener("change", e => {                      // 自動模式：換了來源，模型建議清單跟著換
+  if (!e.target.matches?.('.auto-row [data-af="provider"]')) return;
+  const row = e.target.closest(".auto-row"), inp = row.querySelector('[data-af="model"]');
+  inp.value = ""; inp.placeholder = modelHint(e.target.value);
+  row.querySelector("datalist").innerHTML = provModels(e.target.value).map(m => `<option value="${esc(m)}">`).join("");
+});
+document.addEventListener("click", e => {
+  const t = e.target.closest?.("[data-depth-tick]");
+  if (!t) return;
+  const inp = t.closest(".depth-pop").querySelector("input[type=range]");
+  inp.value = t.dataset.depthTick; syncDepth(inp);
+});
 
 // ── 紀錄清單 ───────────────────────────────────────
 let runsKey = null;
@@ -853,7 +922,7 @@ function renderDetail(d) {
           <div class="sep"></div>
           <label class="plain"><input type="checkbox" id="export-steps" ${exportSteps ? "checked" : ""}>附上執行過程</label>
         </div></div>`}</div>
-    <div class="m">${when(r.started)}${{schedule: "排程", cli: "從命令列"}[r.trigger] || "手動"}開始${took}，使用 ${esc(modelName(r.model, r.provider))}</div>
+    <div class="m">${when(r.started)}${{schedule: "排程", cli: "從命令列"}[r.trigger] || "手動"}開始${took}，使用 ${esc(modelName(r.model, r.provider))}${r.depth && r.depth !== 3 ? `，篇幅「${esc(depthInfo(r.depth).label)}」` : ""}</div>
     ${r.status === "running" ? `<div class="section">結果</div><div class="run-text">還在跑，看上面「現在」那一區</div>` : ""}
     ${r.output ? `<div class="section">結果</div><div class="result">${md(r.output)}</div>` : ""}
     ${r.status === "cancelled" ? `<div class="section">結果</div><div class="muted">你在這裡停止了執行，沒有產出結果。</div>` : ""}
@@ -1078,6 +1147,7 @@ function openEditor(w, pre) {
   f.task.value = v?.task || ""; f.system.value = v?.system || "你是自動執行任務的 agent，一律用繁體中文（台灣）。";
   f.max_steps.value = v?.max_steps || SETTINGS?.limits?.max_steps || 12;
   f.max_tokens.value = v?.max_tokens || "";
+  $("#ed-depth").innerHTML = depthSlider(v?.depth ?? 3, "ed-depth-in", true);
   fillFallbackModels(f.fallback.value, v?.fallback_model || "");
   syncSched();
   openEditor2();
@@ -1122,6 +1192,7 @@ $("#ed-form").addEventListener("submit", async e => {
     skills: [...$("#ed-skills").querySelectorAll("input:checked")].map(i => i.value),
     task: f.task.value, system: f.system.value, max_steps: +f.max_steps.value,
     max_tokens: f.max_tokens.value ? +f.max_tokens.value : undefined, fallback_model: f.fallback_model.value || undefined,
+    depth: +$("#ed-depth input").value,
   };
   $("#ed-save").disabled = true;
   const r = await post(editing ? `/api/workflows/${encodeURIComponent(editing)}/save` : "/api/workflows/new", body);
@@ -1186,7 +1257,8 @@ document.addEventListener("click", async e => {
   if (e.target.closest("[data-run]")) {
     const b = e.target.closest("[data-run]"), inp = document.querySelector("#wf-actions .runin");
     b.disabled = true;
-    await post(`/api/workflows/${encodeURIComponent(selWf)}/run`, {input: inp?.value || ""});
+    await post(`/api/workflows/${encodeURIComponent(selWf)}/run`, {input: inp?.value || "", depth: runDepth[selWf] ?? WF[selWf]?.depth ?? 3});
+    delete runDepth[selWf];                                   // 臨時調的只算這一次，下次回到工作流的預設
     if (inp) inp.value = "";
     setTimeout(async () => { selRun = (await j("/api/runs?workflow=" + encodeURIComponent(selWf)))[0]?.id; lastSig = {}; tick(); }, 400);
     return;
@@ -1281,33 +1353,46 @@ function provCard(name, p) {
   </div>`;
 }
 
+function modelHint(p) {                                    // 留空時實際會用哪個模型
+  const d = SETTINGS.providers[p]?.default_model;
+  return d ? `模型（留空用預設 ${d}）` : p === "lmstudio" ? "模型（留空用 LM Studio 當下載入的）" : "模型（留空用它自己的預設）";
+}
+function provModels(p) {                                   // 這個來源可選的模型：設定裡列的 + 伺服器回報的
+  return [...new Set([...(SETTINGS.providers[p]?.models || []), ...(PROV[p]?.models || [])])];
+}
 function autoRow(it) {
+  auid++;
   const names = Object.keys(SETTINGS.providers);
-  const u = USAGE?.today?.[it.provider] || {runs: 0, tokens: 0};
-  const q = USAGE?.cli_limits?.[it.provider];
-  const qt = q && q.resetsAt * 1000 > Date.now() && q.utilization != null
-    ? ` · 訂閱額度 ${Math.round(q.utilization * 100)}%（${new Date(q.resetsAt * 1000).toLocaleTimeString("zh-TW", {hour: "2-digit", minute: "2-digit", hour12: false})} 重置）` : "";
+  const model = it.model || SETTINGS.providers[it.provider]?.default_model || "";
+  const u = USAGE?.today_models?.[`${it.provider}/${model}`] || {runs: 0, tokens: 0};
+  const q = USAGE?.quota_models?.[`${it.provider}/${model}`] || USAGE?.quota?.[it.provider];
+  const qt = q ? ` · 訂閱${q.label}額度 ${Math.round((q.utilization || 0) * 100)}%（${new Date(q.resetsAt * 1000).toLocaleString("zh-TW", {month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false})} 重置）` : "";
   return `<div class="prov auto-row">
     <div class="prov-h"><div class="row2" style="margin:0">
       <button type="button" class="ghost" data-auto-up title="往上">↑</button><button type="button" class="ghost" data-auto-down title="往下">↓</button>
       <select data-af="provider">${names.map(n => `<option value="${n}" ${n === it.provider ? "selected" : ""}>${esc(SETTINGS.providers[n].label || n)}</option>`).join("")}</select>
-      <input type="text" data-af="model" value="${esc(it.model || "")}" placeholder="模型（留空用預設）" style="width:190px"></div>
+      <input type="text" data-af="model" value="${esc(it.model || "")}" list="aml-${auid}" placeholder="${esc(modelHint(it.provider))}" style="width:230px">
+      <datalist id="aml-${auid}">${provModels(it.provider).map(m => `<option value="${esc(m)}">`).join("")}</datalist></div>
       <button type="button" class="ghost" data-auto-del style="color:var(--bad)">移除</button></div>
     <div class="row2"><span class="muted" style="font-size:13px">每天最多</span>
       <input type="number" data-af="max_daily_tokens" value="${it.max_daily_tokens || 0}" style="width:120px"><span class="muted" style="font-size:13px">tokens、</span>
       <input type="number" data-af="max_daily_runs" value="${it.max_daily_runs || 0}" style="width:80px"><span class="muted" style="font-size:13px">次（0 = 不限）</span></div>
-    <div class="hint" style="margin-top:6px">今天用了 ${u.tokens.toLocaleString()} tokens、${u.runs} 次${qt}</div></div>`;
+    <div class="hint" style="margin-top:6px">這個模型今天用了 ${u.tokens.toLocaleString()} tokens、${u.runs} 次${qt ? `${qt}（整個帳號共用）` : ""}</div></div>`;
 }
+let auid = 0;
 async function loadSettings() {
-  [SETTINGS, PROV, USAGE] = await Promise.all([j("/api/settings"), j("/api/providers"), j("/api/usage")]);
+  PROV = await j("/api/providers");               // 先偵測（訂閱的新模型會在這一步加進自動模式），再讀設定，才不會漏掉
+  [SETTINGS, USAGE] = await Promise.all([j("/api/settings"), j("/api/usage")]);
   const s = SETTINGS;
   $("#st-form").innerHTML = `
     <div class="panel st-sec"><h3>模型來源</h3><div class="muted">工作流和構建器可以用的模型。停用的不會出現在選單裡。</div>
       <div id="prov-list">${Object.entries(s.providers).map(([n, p]) => provCard(n, p)).join("")}</div>
       <button type="button" class="ghost" data-prov-add>＋ 新增 OpenAI 相容的服務（OpenRouter、Ollama、自架伺服器…）</button></div>
-    <div class="panel st-sec"><h3>自動模式</h3><div class="muted">工作流的模型選「自動」時，照這個順序挑第一個「可用、而且沒超過用量上限」的來源；跑到一半出錯就換下一個。</div>
+    <div class="panel st-sec"><h3>自動模式</h3><div class="muted">工作流的模型選「自動」時，照這個順序挑第一個「可用、而且沒超過用量上限」的模型；跑到一半出錯就換下一個。
+      同一個來源可以加好幾次、各選不同模型，例如 Claude Opus 排第一、Claude Sonnet 排第二。每天上限每個模型各算各的。
+      訂閱（Claude、ChatGPT）的每個模型會自動各自加一列在最後面，之後多了新模型也會；刪掉的不會再被加回來。</div>
       <div id="auto-list">${(s.auto?.order || []).map(autoRow).join("")}</div>
-      <button type="button" class="ghost" data-auto-add>＋ 加一個來源</button>
+      <button type="button" class="ghost" data-auto-add>＋ 加一個模型</button>
       <div class="row" style="margin-top:14px"><label>訂閱額度門檻</label><div>
         <input type="number" id="auto-thr" value="${Math.round((s.auto?.cli_max_utilization ?? 0.9) * 100)}" min="10" max="100" style="width:90px"> <span class="muted">%</span>
         <div class="hint">訂閱 CLI（例如 Claude）回報的額度使用率超過這個比例，自動模式就先跳過它，等重置後再用。</div></div></div></div>
@@ -1421,9 +1506,16 @@ document.addEventListener("click", e => {
   }
   if (e.target.closest("[data-auto-del]")) { fade(row, {opacity: [0]}, T.exit); setTimeout(() => row.remove(), 160); return; }
   if (e.target.closest("[data-auto-add]")) {
-    const used = new Set([...document.querySelectorAll('#auto-list [data-af="provider"]')].map(s => s.value));
-    const n = Object.keys(SETTINGS.providers).find(k => !used.has(k)) || Object.keys(SETTINGS.providers)[0];
-    const div = document.createElement("div"); div.innerHTML = autoRow({provider: n}); const r2 = div.firstElementChild;
+    // 挑一個還沒排進去的 (來源, 模型)：先看各來源的模型清單，再看還沒用過的來源
+    const used = new Set([...document.querySelectorAll("#auto-list .auto-row")].map(r => {
+      const p = r.querySelector('[data-af="provider"]').value;
+      return `${p}/${r.querySelector('[data-af="model"]').value || SETTINGS.providers[p]?.default_model || ""}`; }));
+    let pick = {provider: Object.keys(SETTINGS.providers)[0]};
+    outer: for (const p of Object.keys(SETTINGS.providers)) {
+      for (const m of [SETTINGS.providers[p].default_model || "", ...provModels(p)])
+        if (!used.has(`${p}/${m}`)) { pick = {provider: p, model: m === SETTINGS.providers[p].default_model ? "" : m}; break outer; }
+    }
+    const div = document.createElement("div"); div.innerHTML = autoRow(pick); const r2 = div.firstElementChild;
     $("#auto-list").appendChild(r2); enterEl(r2); return;
   }
   const ck = e.target.closest("[data-key-clear]");
@@ -1460,10 +1552,19 @@ async function showPanel(mode, html, title) {
   if (changed) { fade(p, {opacity: [0, 1]}, T.fade); move(p, {transform: ["translateY(8px)", "none"]}, S.enter); }
 }
 
+// 可用的 (來源, 模型)：每個來源先放「預設」，再放它的各個模型（Sonnet / Opus、各個 GPT 分開選）。值是「來源|模型」
 function providerOptions() {
-  return Object.entries(PROV).filter(([p, v]) => v.ok).map(([p, v]) => `<option value="${p}">${esc(v.label || PROVIDER[p] || p)}</option>`).join("")
-    || `<option value="">沒有可用的模型來源</option>`;
+  const out = [];
+  for (const [p, v] of Object.entries(PROV)) {
+    if (!v.ok) continue;
+    const lab = esc(v.label || PROVIDER[p] || p), d = v.default_model || "";
+    out.push(`<option value="${p}|">${lab} · 預設${d ? `（${esc(modelName(d, p).replace(/（.*）$/, ""))}）` : ""}</option>`);
+    for (const m of (v.models || []).filter(x => x !== d && !/embed/i.test(x)).slice(0, 12))
+      out.push(`<option value="${p}|${esc(m)}">${lab} · ${esc(modelName(m, p).replace(/（.*）$/, ""))}</option>`);
+  }
+  return out.join("") || `<option value="">沒有可用的模型來源</option>`;
 }
+const pickModel = sel => { const [provider, model] = (sel?.value || "|").split("|"); return {provider, model}; };
 
 function showSkill(name) {
   const s = SKILLS.find(x => x.name === name); if (!s) return;
@@ -1482,7 +1583,7 @@ function showSkill(name) {
     <div class="row2"><button class="ghost" data-sk-wf="${esc(name)}">做成工作流</button>
       ${canDel ? `<button class="ghost" data-sk-del="${esc(name)}" style="color:var(--bad)">${s.source === "linked" ? "移除連結" : "刪除"}</button>` : `<span class="muted" style="font-size:13px">內建的 skill 不能刪</span>`}</div>`,
     "內容");
-  const sel = $("#sk-try-p"); if (sel && PROV.claude?.ok) sel.value = "claude";
+  const sel = $("#sk-try-p"); if (sel && PROV.claude?.ok) sel.value = "claude|";
 }
 
 function showGithub(msg) {
@@ -1534,7 +1635,7 @@ function builderHtml() {
 function showBuilder() {
   skSel = null; document.querySelectorAll("#sk-list .sk").forEach(el => el.classList.remove("sel"));
   showPanel("builder", builderHtml(), "Skill 對話構建器");
-  setTimeout(() => { const c = $("#b-chat"); if (c) c.scrollTop = c.scrollHeight; const s = $("#b-p"); if (s && PROV.claude?.ok) s.value = "claude"; }, 0);
+  setTimeout(() => { const c = $("#b-chat"); if (c) c.scrollTop = c.scrollHeight; const s = $("#b-p"); if (s && PROV.claude?.ok) s.value = "claude|"; }, 0);
 }
 async function builderSend() {
   const inp = $("#b-in"), text = inp.value.trim();
@@ -1546,7 +1647,7 @@ async function builderSend() {
   const w = document.createElement("div"); w.className = "bub a wait"; w.innerHTML = `<span class="pulse"></span>正在寫…`; chat.appendChild(w); enterEl(w, 80, 6);
   chat.scrollTop = chat.scrollHeight;
   $("[data-b-send]").disabled = true;
-  const r = await post("/api/builder/chat", {messages: builderMsgs, provider: $("#b-p").value});
+  const r = await post("/api/builder/chat", {messages: builderMsgs, ...pickModel($("#b-p"))});
   builderBusy = false;
   if (skMode !== "builder") return;
   $("[data-b-send]").disabled = false;
@@ -1599,7 +1700,7 @@ document.addEventListener("click", async e => {
   if (tr) {
     const input = $("#sk-try-in").value.trim(); if (!input) { $("#sk-try-in").focus(); return; }
     tr.disabled = true;
-    const r = await post(`/api/skills/${encodeURIComponent(tr.dataset.skTry)}/run`, {input, provider: $("#sk-try-p").value});
+    const r = await post(`/api/skills/${encodeURIComponent(tr.dataset.skTry)}/run`, {input, ...pickModel($("#sk-try-p"))});
     tr.disabled = false;
     if (!r.ok) { toast(r.error || "無法執行", 4000); return; }
     // 到工作流分頁看它跑
@@ -1693,7 +1794,8 @@ async function tick() {
     const minute = Math.floor(Date.now() / 60000);
     renderSummary(runs);
     // 選單開著、或正在輸入時先不重畫，但也不能把這次變化記成「已處理」，否則之後永遠不會畫（errata C2：看布林值，不看 class）
-    const barBlocked = Object.values(menuOpen).some(Boolean) || document.activeElement?.classList.contains("runin");
+    const barBlocked = Object.values(menuOpen).some(Boolean) || document.activeElement?.classList.contains("runin")
+                       || document.activeElement?.classList.contains("run-depth");
     if (!barBlocked && changed("bar", [wfs, selWf, minute])) renderBar();
     if (changed("runs", [runs, selRun, selWf, showAll, minute])) renderRuns(runs);
     await loadDetail();
@@ -1707,7 +1809,7 @@ async function liveLoop() {
   setTimeout(liveLoop, active ? 700 : 2500);
 }
 async function start() {
-  try { [PROV, SKILLS, SETTINGS, USAGE] = await Promise.all([j("/api/providers"), j("/api/skills"), j("/api/settings"), j("/api/usage")]); } catch {}
+  try { [PROV, SKILLS, SETTINGS, USAGE, DEPTH] = await Promise.all([j("/api/providers"), j("/api/skills"), j("/api/settings"), j("/api/usage"), j("/api/depth")]); } catch {}
   placeTabInd(true);
   await tick(); liveLoop();
   setInterval(tick, 3000);

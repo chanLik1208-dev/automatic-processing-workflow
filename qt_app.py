@@ -17,8 +17,8 @@ from PySide6.QtGui import QAction, QColor, QFont, QPainter, QPalette
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
                                QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
                                QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
-                               QSizePolicy, QSpinBox, QSplitter, QStackedWidget, QTabWidget, QTextBrowser, QToolButton,
-                               QVBoxLayout, QWidget)
+                               QSizePolicy, QSlider, QSpinBox, QSplitter, QStackedWidget, QTabWidget, QTextBrowser, QToolButton,
+                               QVBoxLayout, QWidget, QWidgetAction)
 
 import engine
 import server
@@ -230,6 +230,161 @@ class TimeBar(QWidget):
         p.end()
 
 
+DEPTH_LEVELS = {1: ("簡短", "約 200–400 字，只講結論"), 2: ("精簡", "約 500–800 字，重點條列"), 3: ("標準", "照工作流原本的寫法"),
+                4: ("深入", "約 1500–3000 字，交叉比對"), 5: ("詳盡", "約 3000–6000 字的完整報告")}   # 開啟後會用 /api/depth 覆蓋
+
+
+def short_model(mid):
+    """模型 ID → 好讀的名字（跟網頁版同一套規則）；訂閱的不同模型要分得出來。"""
+    cap = lambda w: w[:1].upper() + w[1:]
+    if mid.startswith("deepseek-chat"):
+        return "DeepSeek V3"
+    if mid.startswith("deepseek-reasoner"):
+        return "DeepSeek R1"
+    if re.match(r"gpt-", mid, re.I):
+        return "GPT-" + "-".join(cap(x) for x in mid[4:].split("-"))
+    if re.fullmatch(r"sonnet|opus|haiku", mid, re.I):
+        return "Claude " + cap(mid.lower())
+    c = re.fullmatch(r"claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?", mid, re.I)   # claude-opus-4-8 → Claude Opus 4.8
+    if c:
+        return f"Claude {cap(c.group(1))} {c.group(2)}" + (f".{c.group(3)}" if c.group(3) else "")
+    if re.match(r"(claude|gemini)-", mid, re.I):
+        return " ".join(cap(x) for x in mid.split("-"))
+    # 本機模型：名字 + 版本 + 大小（qwen3.5-35b-a3b → Qwen3.5 35B-A3B、gemma-4-e2b → Gemma 4 E2B）
+    m = re.match(r"^([a-z]+)([\d.]*)(?:[-_](\d+(?:\.\d+)?)(?=[-_]|$))?(?:[-_]((?:e?\d+(?:\.\d+)?b)(?:-a\d+b)?))?", mid, re.I)
+    if not m or not (m.group(2) or m.group(3) or m.group(4)):
+        # 縮不出版本或大小：顯示完整 ID；太長就頭尾都留（差別常在結尾，例如 @q4_k / @bf16），不同模型才不會變成同一個名字
+        return mid if len(mid) <= 40 else mid[:24] + "…" + mid[-15:]
+    return (cap(m.group(1)) + (m.group(2) or "") + (f" {m.group(3)}" if m.group(3) else "")
+            + (f" {m.group(4).upper()}" if m.group(4) else ""))
+
+
+def fill_model_combo(combo, win, prefer="claude"):
+    """可用的 (來源, 模型) 都列出來：每個來源先放「預設」，再放它的各個模型（訂閱的 Sonnet / Opus、各個 GPT 分開選）。
+    模型很多的來源（例如 LM Studio 裝了一堆）最多列 12 個，不列 embedding。item 的資料是 (來源, 模型)。"""
+    combo.clear()
+    for n, p in win.prov.items():
+        if not p.get("ok"):
+            continue
+        lab, d = win.prov_label(n), p.get("default_model") or ""
+        combo.addItem(f"{lab} · 預設" + (f"（{short_model(d)}）" if d else ""), (n, ""))
+        for m in [x for x in (p.get("models") or []) if x != d and "embed" not in x.lower()][:12]:
+            combo.addItem(f"{lab} · {short_model(m)}", (n, m))
+    i = next((i for i in range(combo.count()) if combo.itemData(i)[0] == prefer), 0)
+    combo.setCurrentIndex(i)
+
+
+def quota_text(usage, n, key=None):
+    """訂閱額度（伺服器整理好的）：有指定 (來源/模型) 就看那個模型的，包含只算那個模型的視窗。"""
+    q = (usage.get("quota_models") or {}).get(key) if key else None
+    q = q or (usage.get("quota") or {}).get(n)
+    return f"（{q['label']}額度 {round((q['utilization'] or 0) * 100)}%）" if q else ""
+
+
+class DepthSlider(QWidget):
+    """篇幅與深度（類似 effort 的滑桿）：1 簡短 … 3 標準 … 5 詳盡。"""
+
+    def __init__(self, value=3, show_hint=False, bare=False):
+        super().__init__()
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+        if not bare:
+            h.addWidget(label("篇幅", "soft", wrap=False))
+        self.s = QSlider(Qt.Horizontal)
+        self.s.setRange(1, 5)
+        self.s.setPageStep(1)
+        self.s.setFixedWidth(110)
+        self.name = label("", bold=True, wrap=False)
+        self.name.setMinimumWidth(34)
+        self.hint = label("", "muted", wrap=False) if show_hint else None
+        h.addWidget(self.s)
+        if bare:                                              # 在選單裡：名稱由按鈕和刻度顯示，不重複
+            self.name.hide()
+        else:
+            h.addWidget(self.name)
+        if self.hint:
+            h.addWidget(self.hint)
+        h.addStretch()
+        self.s.valueChanged.connect(self._sync)
+        self.set(value)
+
+    def set(self, v):
+        self.s.blockSignals(True)
+        self.s.setValue(int(v or 3))
+        self.s.blockSignals(False)
+        self._sync()
+
+    def value(self):
+        return self.s.value()
+
+    def _sync(self):
+        name, hint = DEPTH_LEVELS.get(self.s.value(), ("", ""))
+        self.name.setText(name)
+        self.setToolTip(hint)
+        if self.hint:
+            self.hint.setText(hint)
+
+
+class DepthMenuButton(QToolButton):
+    """執行列上的「篇幅 標準 ▾」：滑桿放在獨立的二級選單裡。"""
+
+    def __init__(self, on_change):
+        super().__init__()
+        self.setPopupMode(QToolButton.InstantPopup)
+        self.on_change = on_change
+        menu = QMenu(self)
+        box = QWidget()
+        v = QVBoxLayout(box)
+        v.setContentsMargins(12, 10, 12, 8)
+        v.setSpacing(8)
+        v.addWidget(label("篇幅與深度", bold=True, wrap=False))
+        self.slider = DepthSlider(3, bare=True)
+        self.slider.s.setFixedWidth(260)
+        v.addWidget(self.slider)
+        ticks = QHBoxLayout()
+        ticks.setContentsMargins(0, 0, 0, 0)
+        self.ticks = {}
+        for lv in range(1, 6):
+            b = QPushButton(DEPTH_LEVELS[lv][0])
+            b.setFlat(True)
+            b.setStyleSheet("border:none;padding:2px 4px;font-size:12.5px")
+            b.clicked.connect(lambda _=False, lv=lv: self.slider.s.setValue(lv))
+            self.ticks[lv] = b
+            ticks.addWidget(b)
+        v.addLayout(ticks)
+        self.hint = label("", "soft")
+        v.addWidget(self.hint)
+        v.addWidget(label("只套用在下一次執行；平常的預設在「編輯設定」改。", "muted"))
+        act = QWidgetAction(menu)
+        act.setDefaultWidget(box)
+        menu.addAction(act)
+        self.setMenu(menu)
+        self.slider.s.valueChanged.connect(self._changed)
+        self.set(3)
+
+    def set(self, v):
+        self.slider.set(v)
+        self._show()
+
+    def value(self):
+        return self.slider.value()
+
+    def _changed(self, v):
+        self._show()
+        self.on_change(v)
+
+    def _show(self):
+        v = self.value()
+        self.setText(f"篇幅 {DEPTH_LEVELS[v][0]} ▾")
+        self.setToolTip(DEPTH_LEVELS[v][1])
+        self.hint.setText(DEPTH_LEVELS[v][1])
+        for lv, b in self.ticks.items():
+            b.setText(DEPTH_LEVELS[lv][0])
+            b.setStyleSheet("border:none;padding:2px 4px;font-size:12.5px;"
+                            + (f"color:{C('ink')};font-weight:600" if lv == v else f"color:{C('muted')}"))
+
+
 def label(text="", role=None, size=None, bold=False, wrap=True):
     l = QLabel(text)
     l.setWordWrap(wrap)
@@ -370,7 +525,9 @@ class WorkflowTab(QWidget):
         m.addSeparator()
         self.act_del = m.addAction("刪除這條工作流", self.on_delete)
         self.more.setMenu(m)
-        for w in (self.combo, self.info, self.enable, self.inp, self.run_btn, self.more):
+        self.depth = DepthMenuButton(lambda v: self.run_depth.__setitem__(self.sel_wf, v))
+        self.run_depth = {}                                   # 臨時調的深度：只算下一次執行
+        for w in (self.combo, self.info, self.enable, self.inp, self.depth, self.run_btn, self.more):
             h.addWidget(w)
         v.addWidget(bar)
 
@@ -491,6 +648,9 @@ class WorkflowTab(QWidget):
         self.enable.setVisible(w is not None and not manual)
         self.inp.setVisible(w is not None and manual)
         self.run_btn.setVisible(w is not None)
+        self.depth.setVisible(w is not None and not w.get("running"))
+        if w and not self.depth.menu().isVisible():
+            self.depth.set(self.run_depth.get(self.sel_wf, w.get("depth", 3)))
         if not w:
             self.info.setText("從左邊選一條工作流，可以執行、開關排程或修改設定。")
             return
@@ -559,7 +719,8 @@ class WorkflowTab(QWidget):
         parts = [f"<h2 style='margin:0'>{esc(self.win.wf_title(r['workflow']))} "
                  f"<span style='color:{C(st[1])};font-size:15px'>{st[0]}</span></h2>",
                  f"<p style='color:{C('muted')}'>{when(r['started'])}{TRIGGER.get(r['trigger'], '手動')}開始{took}，"
-                 f"使用 {esc(self.win.model_name(r['model'], r['provider']))}</p>"]
+                 f"使用 {esc(self.win.model_name(r['model'], r['provider']))}"
+                 + (f"，篇幅「{DEPTH_LEVELS[r['depth']][0]}」" if r.get("depth") in DEPTH_LEVELS and r["depth"] != 3 else "") + "</p>"]
         if r["status"] == "running":
             parts.append(f"<p style='color:{C('run')}'>還在跑，看上面「現在」那一區</p>")
         if r["output"]:
@@ -689,7 +850,8 @@ class WorkflowTab(QWidget):
         self.run_btn.setEnabled(False)
         text = self.inp.text()
         self.inp.clear()
-        self.b.post(f"/api/workflows/{self.sel_wf}/run", {"input": text}, lambda r: self._after_run())
+        depth = self.run_depth.pop(self.sel_wf, None) or self.depth.value()
+        self.b.post(f"/api/workflows/{self.sel_wf}/run", {"input": text, "depth": depth}, lambda r: self._after_run())
 
     def _after_run(self):
         self.sel_run = None
@@ -818,6 +980,8 @@ class EditorDialog(QDialog):
         self.system = QPlainTextEdit(v.get("system") or "你是自動執行任務的 agent，一律用繁體中文（台灣）。")
         self.system.setMaximumHeight(70)
         f.addRow("角色設定", self.system)
+        self.depth = DepthSlider(v.get("depth", 3), show_hint=True)
+        f.addRow("篇幅與深度", self.depth)
         lim = QHBoxLayout()
         self.steps = QSpinBox()
         self.steps.setRange(1, 60)
@@ -914,7 +1078,8 @@ class EditorDialog(QDialog):
                 "enabled": True if k == 0 else self.enabled.isChecked(),
                 "schedule": {"daily": self.daily.text()} if k == 1 else {"every_minutes": self.every.currentData()} if k == 2 else {},
                 "skills": [n for n, cb in self.skill_boxes.items() if cb.isChecked()],
-                "task": self.task.toPlainText(), "system": self.system.toPlainText(), "max_steps": self.steps.value()}
+                "task": self.task.toPlainText(), "system": self.system.toPlainText(), "max_steps": self.steps.value(),
+                "depth": self.depth.value()}
         if self.tokens.value():
             body["max_tokens"] = self.tokens.value()
         path = f"/api/workflows/{self.w['name']}/save" if self.w else "/api/workflows/new"
@@ -1031,10 +1196,7 @@ class SkillsTab(QWidget):
         inp = QLineEdit()
         inp.setPlaceholderText("要它做什麼？")
         prov = QComboBox()
-        for n, p in self.win.prov.items():
-            if p.get("ok"):
-                prov.addItem(self.win.prov_label(n), n)
-        prov.setCurrentIndex(max(0, prov.findData("claude")))
+        fill_model_combo(prov, self.win)
         go = QPushButton("執行")
         row.addWidget(inp, 1)
         row.addWidget(prov)
@@ -1046,7 +1208,8 @@ class SkillsTab(QWidget):
                 inp.setFocus()
                 return
             go.setEnabled(False)
-            self.b.post(f"/api/skills/{name}/run", {"input": inp.text(), "provider": prov.currentData()}, after_run)
+            pm = prov.currentData() or ("", "")
+            self.b.post(f"/api/skills/{name}/run", {"input": inp.text(), "provider": pm[0], "model": pm[1]}, after_run)
 
         def after_run(r):
             go.setEnabled(True)
@@ -1157,10 +1320,7 @@ class SkillsTab(QWidget):
         self.b_in.installEventFilter(self)
         row = QHBoxLayout()
         self.b_prov = QComboBox()
-        for n, p in self.win.prov.items():
-            if p.get("ok"):
-                self.b_prov.addItem(self.win.prov_label(n), n)
-        self.b_prov.setCurrentIndex(max(0, self.b_prov.findData("claude")))
+        fill_model_combo(self.b_prov, self.win)
         self.b_send = QPushButton("送出")
         self.b_send.clicked.connect(self.builder_send)
         reset = QPushButton("重新開始")
@@ -1221,7 +1381,8 @@ class SkillsTab(QWidget):
         self.builder_msgs.append({"role": "user", "content": text})
         self.render_chat(True)
         self.b_send.setEnabled(False)
-        self.b.post("/api/builder/chat", {"messages": self.builder_msgs, "provider": self.b_prov.currentData()}, self._builder_reply)
+        pm = self.b_prov.currentData() or ("", "")
+        self.b.post("/api/builder/chat", {"messages": self.builder_msgs, "provider": pm[0], "model": pm[1]}, self._builder_reply)
 
     def _builder_reply(self, r):
         self.b_send.setEnabled(True)
@@ -1263,7 +1424,9 @@ class SettingsTab(QScrollArea):
         self.s, self.fields, self.prov_rows, self.auto_rows = {}, {}, {}, []
 
     def load(self):
-        self.b.get("/api/settings", lambda s: self.b.get("/api/usage", lambda u: self.build(s or {}, u or {})))
+        # 先偵測（訂閱的新模型會在這一步加進自動模式），再讀設定，才不會漏掉
+        self.b.get("/api/providers", lambda pr: (self.win.prov.update(pr or {}), self.b.get(
+            "/api/settings", lambda s: self.b.get("/api/usage", lambda u: self.build(s or {}, u or {})))))
 
     def section(self, v, title, note=""):
         box = QFrame()
@@ -1328,13 +1491,15 @@ class SettingsTab(QScrollArea):
         add.clicked.connect(self.new_provider)
         f.addRow(add)
         # 自動模式
-        f = self.section(v, "自動模式", "工作流的模型選「自動」時，照這個順序挑第一個可用、而且沒超過用量上限的來源；跑到一半出錯就換下一個。")
+        f = self.section(v, "自動模式", "工作流的模型選「自動」時，照這個順序挑第一個可用、而且沒超過用量上限的模型；跑到一半出錯就換下一個。"
+                                        "同一個來源可以加好幾次、各選不同模型（例如 Claude Opus 排第一、Sonnet 排第二），每天上限每個模型各算各的。"
+                                        "訂閱（Claude、ChatGPT）的每個模型會自動各自加一列在最後面，之後多了新模型也會；刪掉的不會再被加回來。")
         self.auto_box = QVBoxLayout()
         f.addRow(self.auto_box)
         for it in (s.get("auto") or {}).get("order", []):
             self.add_auto(it)
-        a = QPushButton("＋ 加一個來源")
-        a.clicked.connect(lambda: self.add_auto({"provider": next((n for n in s["providers"] if n not in [r["p"].currentData() for r in self.auto_rows]), "lmstudio")}))
+        a = QPushButton("＋ 加一個模型")
+        a.clicked.connect(lambda: self.add_auto(self.next_auto()))
         f.addRow(a)
         self.thr = QSpinBox()
         self.thr.setRange(10, 100)
@@ -1502,6 +1667,23 @@ class SettingsTab(QScrollArea):
             i += 1
         self.add_provider(f"custom{i}", {"label": "新的模型來源", "base_url": "", "needs_key": True, "enabled": True})
 
+    def models_of(self, n):
+        """這個來源可選的模型：設定裡列的 + 伺服器回報的。"""
+        listed = (self.s.get("providers", {}).get(n) or {}).get("models") or []
+        return list(dict.fromkeys(listed + ((self.win.prov.get(n) or {}).get("models") or [])))
+
+    def default_model(self, n):
+        return (self.s.get("providers", {}).get(n) or {}).get("default_model") or ""
+
+    def next_auto(self):
+        """還沒排進去的 (來源, 模型)：先看各來源的模型清單，都排過了就給第一個來源讓使用者自己改。"""
+        used = {(r["p"].currentData(), r["m"].currentText().strip() or self.default_model(r["p"].currentData())) for r in self.auto_rows}
+        for n in self.s.get("providers", {}):
+            for m in [self.default_model(n)] + self.models_of(n):
+                if (n, m) not in used:
+                    return {"provider": n, "model": "" if m == self.default_model(n) else m}
+        return {"provider": next(iter(self.s.get("providers", {})), "lmstudio")}
+
     def add_auto(self, it):
         box = QFrame()
         box.setObjectName("card")
@@ -1513,8 +1695,20 @@ class SettingsTab(QScrollArea):
         for n, x in self.s.get("providers", {}).items():
             p.addItem(x.get("label") or n, n)
         p.setCurrentIndex(max(0, p.findData(it.get("provider"))))
-        m = QLineEdit(it.get("model", ""))
-        m.setPlaceholderText("模型（留空用預設）")
+        m = QComboBox()
+        m.setEditable(True)
+        m.setMinimumWidth(220)
+
+        def fill_models(keep=""):
+            n = p.currentData()
+            m.clear()
+            m.addItems(self.models_of(n))
+            m.setEditText(keep)
+            d = self.default_model(n)
+            m.lineEdit().setPlaceholderText(f"模型（留空用預設 {d}）" if d else "模型（留空用 LM Studio 當下載入的）"
+                                            if n == "lmstudio" else "模型（留空用它自己的預設）")
+        fill_models(it.get("model", ""))
+        p.currentIndexChanged.connect(lambda _: fill_models())
         tok, runs = QSpinBox(), QSpinBox()
         tok.setRange(0, 100_000_000)
         tok.setSingleStep(10000)
@@ -1523,9 +1717,10 @@ class SettingsTab(QScrollArea):
         runs.setRange(0, 100000)
         runs.setSpecialValueText("不限")
         runs.setValue(it.get("max_daily_runs") or 0)
-        u = (self.usage.get("today") or {}).get(it.get("provider"), {"tokens": 0, "runs": 0})
+        key = f"{it.get('provider')}/{it.get('model') or self.default_model(it.get('provider'))}"
+        u = (self.usage.get("today_models") or {}).get(key, {"tokens": 0, "runs": 0})
         for w in (up, down, p, m, QLabel("每天最多"), tok, QLabel("tokens、"), runs, QLabel("次"),
-                  label(f"今天 {u['tokens']:,} tokens / {u['runs']} 次", "muted"), rm):
+                  label(f"這個模型今天 {u['tokens']:,} tokens / {u['runs']} 次" + quota_text(self.usage, it.get("provider"), key), "muted"), rm):
             h.addWidget(w)
         row = {"box": box, "p": p, "m": m, "tok": tok, "runs": runs}
         self.auto_rows.append(row)
@@ -1570,7 +1765,7 @@ class SettingsTab(QScrollArea):
             out.setdefault("update", {})["new_token"] = self.up_token.text().strip()
         out["local_fallback"] = {"enabled": self.lf_on.isChecked(), "provider": self.lf_p.currentData(), "model": self.lf_m.text()}
         out["auto"] = {"cli_max_utilization": self.thr.value() / 100,
-                       "order": [{"provider": r["p"].currentData(), "model": r["m"].text(), "max_daily_tokens": r["tok"].value(),
+                       "order": [{"provider": r["p"].currentData(), "model": r["m"].currentText().strip(), "max_daily_tokens": r["tok"].value(),
                                   "max_daily_runs": r["runs"].value()} for r in self.auto_rows]}
         return out
 
@@ -1637,6 +1832,7 @@ class MainWindow(QMainWindow):
         self.load_providers()
         self.backend.get("/api/settings", lambda s: setattr(self, "settings", s or {}))
         self.backend.get("/api/skills", lambda s: setattr(self, "skills", s or []))
+        self.backend.get("/api/depth", lambda d: DEPTH_LEVELS.update({x["level"]: (x["label"], x["hint"]) for x in d or []}))
         self.refresh()
         self.timer = QTimer(self, interval=3000, timeout=self.refresh)
         self.timer.start()
@@ -1655,9 +1851,7 @@ class MainWindow(QMainWindow):
         if provider == "auto":
             return "自動模式"
         mid = mid or (self.prov.get(provider) or {}).get("default_model") or ""
-        m = re.match(r"^([a-z]+)([\d.]*)[-_]?(\d+(?:\.\d+)?b)?", mid, re.I)
-        name = "DeepSeek V3" if mid.startswith("deepseek-chat") else (
-            (m.group(1).capitalize() + (m.group(2) or "") + (" " + m.group(3).upper() if m.group(3) else "")) if m else mid)
+        name = short_model(mid)
         return f"{name}（{self.prov_label(provider)}）" if name else self.prov_label(provider)
 
     def wf_title(self, n):
@@ -1695,10 +1889,7 @@ class MainWindow(QMainWindow):
         self.backend.get("/api/live", got)
 
     def quota(self, n):
-        q = (self.usage.get("cli_limits") or {}).get(n)
-        if q and q.get("resetsAt", 0) > time.time() and q.get("utilization") is not None:
-            return f"（{ {'five_hour': '5 小時', 'seven_day': '7 天'}.get(q.get('rateLimitType'), '') }額度 {round(q['utilization'] * 100)}%）"
-        return ""
+        return quota_text(self.usage, n)
 
     def render_summary(self):
         runs = getattr(self, "runs", [])

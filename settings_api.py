@@ -71,18 +71,19 @@ def save(body):
     if "auto" in body:
         a = body["auto"] or {}
         order, seen = [], set()
-        for it in a.get("order") or []:
-            name = str(it.get("provider") or "")
-            if not name or name in seen:
+        for it in a.get("order") or []:                     # 同一個來源可以出現多次，只要模型不同（Opus、Sonnet 各排各的）
+            name, model = str(it.get("provider") or ""), str(it.get("model") or "").strip()[:120]
+            if not name or (name, model) in seen:
                 continue
-            seen.add(name)
-            order.append({"provider": name, "model": str(it.get("model") or "")[:120],
+            seen.add((name, model))
+            order.append({"provider": name, "model": model,
                           "max_daily_tokens": max(0, int(it.get("max_daily_tokens") or 0)),
                           "max_daily_runs": max(0, int(it.get("max_daily_runs") or 0))})
         thr = float(a.get("cli_max_utilization", 0.9))
         if not 0.1 <= thr <= 1:
             raise ValueError("訂閱額度門檻要在 10%–100% 之間")
-        raw["auto"] = {"order": order, "cli_max_utilization": thr}
+        # seen_models 要留著：使用者刪掉的自動加入模型，不會在下次偵測時又被加回來
+        raw["auto"] = {"order": order, "cli_max_utilization": thr, "seen_models": (raw.get("auto") or {}).get("seen_models", [])}
 
     up = body.get("update") or {}
     if up.get("new_token"):

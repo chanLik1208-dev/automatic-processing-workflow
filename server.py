@@ -32,6 +32,7 @@ def workflows_view():
                 "name": name, "title": wf.get("title", name), "description": wf.get("description", ""),
                 "system": wf.get("system", ""), "task": wf.get("task", ""), "max_steps": wf.get("max_steps"),
                 "max_tokens": wf.get("max_tokens"), "fallback_model": wf.get("fallback_model"),
+                "depth": wf.get("depth", engine.DEPTH_DEFAULT),
                 "provider": wf.get("provider"), "model": wf.get("model"), "fallback": wf.get("fallback"),
                 "schedule": wf.get("schedule"), "skills": wf.get("skills", []), "enabled": wf["enabled"],
                 "running": name in engine._running,
@@ -126,6 +127,8 @@ class Api:
             return self.send((engine.APP_DIR / "dashboard.html").read_bytes(), ctype="text/html")
         if u.path == "/api/workflows":
             return self.send(workflows_view())
+        if u.path == "/api/depth":                          # 滑桿的五個等級（名稱、說明），介面照這個畫
+            return self.send([{"level": k, "label": v["label"], "hint": v["hint"]} for k, v in engine.DEPTH.items()])
         if u.path == "/api/live":
             out = []
             for v in list(engine.LIVE.values()):
@@ -136,7 +139,13 @@ class Api:
             return self.send(out)
         if u.path == "/api/usage":
             week = time.time() - 7 * 86400
-            return self.send({"today": engine.usage(), "week": engine.usage(since=week), "cli_limits": engine.cli_limits()})
+            conf = engine.load_config()
+            return self.send({"today": engine.usage(), "week": engine.usage(since=week), "cli_limits": engine.cli_limits(),
+                              "today_models": engine.usage_by_model(),
+                              # 訂閱額度（整理好的）：整個來源看最兇的共用視窗；每個 (來源, 模型) 另外算，包含只算那個模型的視窗
+                              "quota": {n: engine.quota_summary(n) for n in conf["providers"]},
+                              "quota_models": {f"{n}/{m}": engine.quota_summary(n, m) for n, p in conf["providers"].items()
+                                               for m in dict.fromkeys([p.get("default_model") or ""] + (p.get("models") or []))}})
         if u.path == "/api/update":
             return self.send(updater.status())
         if u.path == "/api/instance":
@@ -144,15 +153,16 @@ class Api:
         if u.path == "/api/settings":
             return self.send(settings_api.masked())
         if u.path == "/api/providers":
-            return self.send({n: engine.ping_provider(n) for n, p in engine.load_config()["providers"].items()
-                              if p.get("enabled", True)})
+            st = {n: engine.ping_provider(n) for n, p in engine.load_config()["providers"].items() if p.get("enabled", True)}
+            engine.sync_auto_models(st)                       # 訂閱多了新模型：自動加進自動模式（各自一列）
+            return self.send(st)
         if u.path == "/api/skills":
             return self.send(skill_admin.list_skills())
         if u.path == "/api/runs":
             wf = q.get("workflow", [None])[0]
             with engine.db() as c:
                 sql = "SELECT id, workflow, provider, model, trigger, status, started, finished, error, " \
-                      "tokens_in, tokens_out FROM runs"
+                      "tokens_in, tokens_out, depth FROM runs"
                 rows = c.execute(sql + (" WHERE workflow=?" if wf else "") + " ORDER BY id DESC LIMIT 50",
                                  (wf,) if wf else ()).fetchall()
             return self.send([dict(r) for r in rows])
@@ -230,7 +240,7 @@ class Api:
                 return self.send({"error": "no such workflow"}, 404)
             action = parts[3] if len(parts) == 4 else ""
             if action == "run":
-                return self.send({"started": engine.start_async(name, "manual", body.get("input", ""))})
+                return self.send({"started": engine.start_async(name, "manual", body.get("input", ""), depth=body.get("depth"))})
             if action == "stop":
                 return self.send({"ok": engine.cancel(name)})
             if action == "save":
