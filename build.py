@@ -53,6 +53,9 @@ if os_name == "macos":
     with tempfile.TemporaryDirectory() as stage:
         shutil.copytree(app, Path(stage) / "AutoWorkflow.app", symlinks=True)
         os.symlink("/Applications", Path(stage) / "Applications")      # 打開 dmg 就能直接拖進「應用程式」
+        # 雙擊就會複製到「應用程式」並移除隔離標記（腳本本身第一次仍要在系統設定允許一次）
+        shutil.copy2(ROOT / "packaging" / "install-macos.command", Path(stage) / "安裝 AutoWorkflow.command")
+        os.chmod(Path(stage) / "安裝 AutoWorkflow.command", 0o755)
         out = DIST / f"{full}.dmg"
         subprocess.run(["hdiutil", "create", "-volname", "AutoWorkflow", "-srcfolder", stage,
                         "-ov", "-format", "UDZO", str(out)], check=True, capture_output=True)
