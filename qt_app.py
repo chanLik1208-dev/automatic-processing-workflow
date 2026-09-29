@@ -1756,12 +1756,23 @@ class MainWindow(QMainWindow):
             self.toast(f"已存到 {path}")
 
 
+def apply_font(app):
+    """明確指定有中文字的字型，不靠 Qt 自己找替代字型（各平台結果不一定一樣）。"""
+    f = app.font()
+    fams = {"win32": ["Microsoft JhengHei UI", "Microsoft JhengHei", "Segoe UI"],
+            "darwin": [".AppleSystemUIFont", "PingFang TC", "Heiti TC"]}.get(sys.platform,
+            ["Noto Sans CJK TC", "Noto Sans TC", "WenQuanYi Micro Hei", "Droid Sans Fallback", "Sans Serif"])
+    f.setFamilies(fams + [f.family()])
+    app.setFont(f)
+
+
 def run():
     import threading
     engine.init_db()
     threading.Thread(target=engine.scheduler_loop, daemon=True).start()
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("自動化工作流")
+    apply_font(app)
     w = MainWindow()
     w.show()
     return app.exec()
@@ -1783,6 +1794,7 @@ def self_test(outdir):
     engine.init_db()
     threading.Thread(target=engine.scheduler_loop, daemon=True).start()
     app = QApplication.instance() or QApplication(sys.argv)
+    apply_font(app)
     w = MainWindow()
     w.resize(1320, 880)
     w.show()

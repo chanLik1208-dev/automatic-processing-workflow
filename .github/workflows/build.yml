@@ -85,9 +85,9 @@ jobs:
 
       - name: 介面自我測試（真的開出 Qt 介面，離屏、不需要螢幕；存截圖）
         shell: bash
-        env:
-          QT_QPA_PLATFORM: offscreen
         run: |
+          # macOS / Linux 用離屏模式；Windows 的離屏模式讀不到系統字型（截圖全是方塊），改用真的 Windows 視窗
+          [ "$RUNNER_OS" != "Windows" ] && export QT_QPA_PLATFORM=offscreen
           if [ "$RUNNER_OS" = "Linux" ]; then
             sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-cjk libegl1 libxkbcommon0 > /dev/null   # 中文字型只是讓截圖看得懂
           fi
