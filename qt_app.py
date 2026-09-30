@@ -206,7 +206,7 @@ class TimeBar(QWidget):
         total = sum(s[1] for s in segs) or 1
         self.setToolTip("\n".join(f"{s[2]}：{dur(s[1]) or '不到 1 秒'}" for s in segs))
         self._total = total
-        self.upd()
+        self.update()
 
     def paintEvent(self, _):
         if not self.segs:

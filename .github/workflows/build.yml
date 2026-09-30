@@ -95,6 +95,10 @@ jobs:
           # 查更新會用 urllib 連 api.github.com：憑證有問題這裡就會失敗（不能被略過）
           AUTOWORKFLOW_HOME="$RUNNER_TEMP/https-home" "$(cat dist/test-bin.txt)" update --check
 
+      - name: 介面模組都有打包（之前 WebView 模組沒打包進去，每台電腦都默默改開 Qt 版）
+        shell: bash
+        run: '"$(cat dist/test-bin.txt)" --check-ui'
+
       - name: 介面自我測試（真的開出 Qt 介面，離屏、不需要螢幕；存截圖）
         shell: bash
         run: |

@@ -246,6 +246,16 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--check-ui" in sys.argv:                    # 發佈前檢查：兩種視窗的模組都要打包進去、載入得了
+        failed = []
+        for mod in ("native", "qt_app"):
+            try:
+                __import__(mod)
+                print(f"{mod}：可以載入")
+            except Exception as e:
+                failed.append(mod)
+                print(f"{mod}：載入失敗（{type(e).__name__}: {e}）")
+        sys.exit(1 if failed else 0)
     if "--mcp-skills" in sys.argv:                  # codex 開的 MCP 伺服器（見 mcp_skills.py）：不要跑任何其他啟動流程
         import mcp_skills
         mcp_skills.serve()
