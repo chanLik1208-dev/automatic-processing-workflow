@@ -353,6 +353,33 @@ def t_search_pacing():
     return f"連續三次搜尋被排開（{took:.1f} 秒）；官方搜尋預設關閉"
 
 
+def t_gemini_agy():
+    """Gemini 訂閱改走 Antigravity CLI（agy）：舊設定自動換成 agy；agy 的 stream-json 結果能解析成回覆和工具呼叫。"""
+    import json as _j, stat as _st
+    raw = _j.loads((HOME / "config.json").read_text(encoding="utf-8"))
+    raw["providers"]["gemini"].update(command="gemini", label="Gemini")        # 模擬舊版留下的設定
+    (HOME / "config.json").write_text(_j.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    g = engine.load_config()["providers"]["gemini"]
+    assert g["command"] == "agy" and g["label"] == "Gemini 訂閱" and "antigravity" in g["install"]["darwin"][0], g
+    if sys.platform == "win32":
+        return "舊設定會換成 agy（假的 agy 是 shell 腳本，Windows 上略過解析測試）"
+    reply = _j.dumps({"say": "先搜尋", "tool_calls": [{"name": "web_search", "arguments": {"query": "x"}}]}, ensure_ascii=False)
+    fake = HOME / "fake-agy"
+    fake.write_text("#!/bin/sh\ncat > \"$(dirname \"$0\")/agy-input.txt\"\n"
+                    "echo '{\"event\":\"init\",\"conversation_id\":\"c\"}'\n"
+                    f"echo '{_j.dumps({'event': 'result', 'result': {'status': 'OK', 'response': reply, 'usage': {'input_tokens': 10, 'output_tokens': 5}}}, ensure_ascii=False)}'\n")
+    fake.chmod(fake.stat().st_mode | _st.S_IEXEC)
+    p = {**g, "command": "agy-not-on-path", "path": str(fake), "_name": "gemini"}
+    tools = [{"type": "function", "function": {"name": "web_search", "description": "d", "parameters": {"type": "object"}}}]
+    r = engine.chat_cli(p, "", [{"role": "system", "content": "SYS"}, {"role": "user", "content": "問題"}], tools, {})
+    m = r["choices"][0]["message"]
+    assert m["tool_calls"][0]["function"]["name"] == "web_search" and m["content"] == "先搜尋", m
+    assert r["usage"] == {"prompt_tokens": 10, "completion_tokens": 5}, r["usage"]
+    sent = _j.loads((HOME / "agy-input.txt").read_text(encoding="utf-8"))
+    assert sent["event"] == "user" and "SYS" in sent["message"]["content"] and "問題" in sent["message"]["content"], sent
+    return "舊設定換成 agy；系統提示和對話從標準輸入送出；回覆解析成工具呼叫"
+
+
 def t_update():
     import updater
     assert updater._ver("0.10.0") > updater._ver("0.9.9") > updater._ver("0.2.1"), "版本比較錯誤"
@@ -474,6 +501,7 @@ def main():
     check("排程鎖", t_scheduler_lock)
     check("抓網頁", t_fetch, skip=net)
     check("搜尋間隔 / 官方搜尋預設關閉", t_search_pacing)
+    check("Gemini 訂閱（agy）", t_gemini_agy)
     check("搜尋", t_search, skip=net)
     check("匯出 Word / PDF", t_export)
     check("檢查更新", t_update, skip=net)

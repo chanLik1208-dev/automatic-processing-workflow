@@ -61,24 +61,23 @@
     },
     "gemini": {
       "type": "cli",
-      "command": "gemini",
-      "label": "Gemini",
+      "command": "agy",
+      "label": "Gemini 訂閱",
       "adapter": "gemini",
       "default_model": "",
       "models": [],
       "install": {
         "darwin": [
-          "brew install gemini-cli",
-          "或：npm install -g @google/gemini-cli"
+          "curl -fsSL https://antigravity.google/cli/install.sh | bash"
         ],
         "linux": [
-          "npm install -g @google/gemini-cli"
+          "curl -fsSL https://antigravity.google/cli/install.sh | bash"
         ],
         "win32": [
-          "npm install -g @google/gemini-cli"
+          "irm https://antigravity.google/cli/install.ps1 | iex   # 在 PowerShell 執行"
         ]
       },
-      "login": "裝好後執行一次 gemini，選「Login with Google」用你的 Google 帳號登入"
+      "login": "裝好後在終端機執行一次 agy，照畫面用你的 Google 帳號（AI Pro / Ultra 或免費帳號）登入"
     }
   },
   "server": {

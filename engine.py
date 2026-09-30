@@ -155,8 +155,21 @@ def _merge(base, over):
     return out
 
 
+# Google 在 2026-06-18 停掉了 Gemini CLI 的個人帳號登入（免費 / AI Pro / Ultra 都一樣），改用 Antigravity CLI（agy）。
+# 舊版建立的設定檔裡 gemini 還指向 gemini 指令：讀設定時換成 agy，使用者自己改過的名稱、路徑、開關都保留。
+AGY = {"command": "agy", "adapter": "gemini", "label": "Gemini 訂閱",
+       "install": {"darwin": ["curl -fsSL https://antigravity.google/cli/install.sh | bash"],
+                   "linux": ["curl -fsSL https://antigravity.google/cli/install.sh | bash"],
+                   "win32": ["irm https://antigravity.google/cli/install.ps1 | iex   # 在 PowerShell 執行"]},
+       "login": "裝好後在終端機執行一次 agy，照畫面用你的 Google 帳號（AI Pro / Ultra 或免費帳號）登入"}
+
+
 def load_config():
-    return _merge(SETTING_DEFAULTS, json.loads((ROOT / "config.json").read_text(encoding="utf-8")))
+    c = _merge(SETTING_DEFAULTS, json.loads((ROOT / "config.json").read_text(encoding="utf-8")))
+    g = (c.get("providers") or {}).get("gemini")
+    if isinstance(g, dict) and g.get("command") == "gemini":
+        g.update(AGY, label=g.get("label") if g.get("label") not in (None, "", "Gemini") else AGY["label"])
+    return c
 
 
 def cfg(path, default=None):
@@ -650,7 +663,7 @@ def _parse_tool_json(text):
     return None
 
 
-CLI_ADAPTERS = {"claude", "codex"}               # 實際測通過的；gemini 等安裝後再接
+CLI_ADAPTERS = {"claude", "codex", "gemini"}
 # 不在 PATH 上、但常見的安裝位置（例如 ChatGPT 桌面版內附的 codex）
 CLI_BUNDLED = {"codex": ["/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
                          "/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
@@ -818,6 +831,9 @@ def chat_cli(p, model, messages, tools, live, timeout=600):
     system = messages[0]["content"]
     if tools:
         system += TOOL_PROTOCOL.format(specs=json.dumps([t["function"] for t in tools], ensure_ascii=False, indent=1))
+    if p.get("adapter") == "gemini":
+        text, usage = chat_agy(p, model or p.get("default_model") or "", system, messages, live, timeout)
+        return _cli_reply(p, model or p.get("default_model") or "", text, "", tools, usage)
     model = model or p["default_model"]
     cmd = [cli_exe(p),
            "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
@@ -876,6 +892,60 @@ def chat_cli(p, model, messages, tools, live, timeout=600):
     return _cli_reply(p, model, text, thinking, tools,
                       {"prompt_tokens": usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0),
                        "completion_tokens": usage.get("output_tokens", 0)})
+
+
+def chat_agy(p, model, system, messages, live, timeout=600):
+    """Gemini 訂閱（Antigravity CLI，agy）。跟 Claude 一樣只把它當「會思考的模型」，工具走文字協定、由我們執行：
+    agy 內建的搜尋和開網頁是 Google 的伺服器帶 AI 身分去抓，會被差別對待。
+    agy 沒有系統提示的參數，所以系統提示放在輸入最前面；輸入用 stream-json 從標準輸入送（沒有命令列長度限制）。
+    在空資料夾執行：它內建的檔案工具在工作區裡會自動核准，空資料夾用完就刪。"""
+    cmd = [cli_exe(p), "--input-format", "stream-json", "--output-format", "stream-json",
+           "--sandbox", "--disable-slash-commands"]
+    if model:
+        cmd += ["--model", model]
+    prompt = (f"## 系統指示（嚴格遵守）\n{system}\n\n"
+              "不要使用你內建的任何工具（搜尋網頁、讀網址、執行指令、讀寫檔案、瀏覽器、子代理都不行），"
+              "需要工具時只能照上面的格式輸出 JSON。\n\n" + _transcript(messages))
+    tmp = tempfile.mkdtemp(prefix="wf-cli-")
+    proc = subprocess.Popen(cmd, cwd=tmp, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8", errors="replace")
+    live["_proc"] = proc
+    killer = threading.Timer(timeout, proc.kill)
+    killer.start()
+    result, errline = None, ""
+    try:
+        proc.stdin.write(json.dumps({"event": "user", "message": {"content": prompt}}, ensure_ascii=False) + "\n")
+        proc.stdin.close()
+        live.update(phase="thinking")
+        for line in proc.stdout:
+            if line.startswith("AGY_ERROR:"):
+                try:
+                    errline = json.loads(line[10:]).get("short_error", "")
+                except ValueError:
+                    errline = line[10:].strip()
+                continue
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            live["last_token"] = time.time()
+            if e.get("event") == "result":
+                result = e.get("result") or {}
+        proc.wait()
+    finally:
+        killer.cancel()
+        live.pop("_proc", None)
+        shutil.rmtree(tmp, ignore_errors=True)
+    if live.get("run_id") in _cancel:
+        raise Cancelled()
+    if result is None or result.get("status") == "ERROR" or proc.returncode:
+        err = (result or {}).get("error") or errline or proc.stderr.read()[-400:] or f"結束代碼 {proc.returncode}"
+        if re.search(r"sign in|not signed in|authenticat", err, re.I):
+            err = "還沒登入：在終端機執行一次 agy，用 Google 帳號登入後再試。"
+        raise RuntimeError(f"agy 執行失敗：{err[:400]}")
+    u = result.get("usage") or {}
+    return result.get("response") or "", {"prompt_tokens": u.get("input_tokens", 0) + u.get("cache_read_tokens", 0),
+                                          "completion_tokens": u.get("output_tokens", 0) + u.get("thinking_tokens", 0)}
 
 
 def _cli_reply(p, model, text, thinking, tools, usage):
