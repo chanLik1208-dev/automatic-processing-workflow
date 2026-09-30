@@ -138,6 +138,10 @@ textarea { width: 100%; resize: vertical; line-height: 1.6; }
 .depth b { color: var(--ink); font-weight: 600; min-width: 2.2em; }
 .depth .dh { color: var(--muted); font-size: 12.5px; white-space: normal; }
 .depth-btn b { font-weight: 600; color: var(--ink); }
+.model-btn b { font-weight: 600; color: var(--ink); } .model-btn.on b { color: var(--run); }
+#model-pick { min-width: 280px; max-height: 60vh; overflow-y: auto; }
+#model-pick .mh { font-size: 12px; color: var(--muted); padding: 8px 10px 2px; }
+#model-pick .plain.cur { background: var(--tint); font-weight: 600; }
 /* 極端值特效：max 是流動的彩虹（像 Claude Code 的 max / ultrathink），low 是安靜呼吸的冷色 */
 .fx-max { background: linear-gradient(90deg, #ff7a7a, #ffc56b, #8fe39a, #7ab8ff, #c89bff, #ff7a7a); background-size: 200% 100%;
   -webkit-background-clip: text; background-clip: text; color: transparent !important; animation: fx-flow 2.4s linear infinite; }
@@ -465,7 +469,7 @@ function settle(el) {                                // 動畫結束後把 fill 
 }
 
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-let DEPTH = [], runDepth = {};                  // 篇幅與深度的等級；runDepth：這次執行臨時調的（只在這個工作流、這次）
+let DEPTH = [], runDepth = {}, runModel = {};   // runModel：這次執行臨時換的模型（「來源|模型」），只算下一次                  // 篇幅與深度的等級；runDepth：這次執行臨時調的（只在這個工作流、這次）
 let WF = {}, WFS = [], PROV = {}, SKILLS = [], selWf = null, selRun = null, showAll = false, lastSig = {}, editing = null;
 
 // ── 白話化 ─────────────────────────────────────────
@@ -697,7 +701,7 @@ function renderBar() {
   $("#wf-actions").innerHTML =
     (manual ? "" : `<label class="switch" title="開關排程"><input type="checkbox" data-enable ${w.enabled ? "checked" : ""}><span class="tr"></span>排程</label>`) +
     (manual ? `<input type="text" class="runin" placeholder="要處理什麼？" value="${esc(keep)}">` : "") +
-    (w.running ? "" : depthMenu(runDepth[selWf] ?? w.depth ?? 3)) +
+    (w.running ? "" : modelMenu(w) + depthMenu(runDepth[selWf] ?? w.depth ?? 3)) +
     (w.running ? `<button class="ghost" data-stop style="color:var(--bad)">停止</button>` : `<button data-run>立即執行</button>`);
   $("#more-menu").innerHTML = `<span class="plain" data-act="edit">編輯設定</span><span class="plain" data-act="new">＋ 新增工作流</span>
     <div class="sep"></div><span class="plain danger" data-act="delete">刪除這條工作流</span>`;
@@ -709,6 +713,25 @@ function depthSlider(v, cls, hint) {
   const d = depthInfo(v);
   return `<label class="depth" title="${esc(d.hint)}">篇幅<input type="range" class="${cls}" min="1" max="5" step="1" value="${v}"><b class="${depthFx(v)}">${esc(d.label)}</b>${hint ? `<span class="dh">${esc(d.hint)}</span>` : ""}</label>`;
 }
+// 執行列：這次要用哪個模型（二級選單）。不選就照工作流的設定；選了只套用在下一次執行
+// 只要模型名稱：拿掉結尾的「（來源名稱）」。來源名稱自己可能有括號（LM Studio（本機）），所以用長度切，不用正規式
+const shortName = (m, p) => { const full = modelName(m, p), tail = `（${provLabel(p)}）`; return full.endsWith(tail) ? full.slice(0, -tail.length) : full; };
+function modelMenu(w) {
+  const cur = runModel[selWf] || "";
+  const [cp, cm] = cur.split("|");
+  const label = cur ? (cp === "auto" ? "自動" : shortName(cm, cp)) : shortName(w.model, w.provider);
+  const item = (val, text, sub) => `<span class="plain ${val === cur ? "cur" : ""}" data-run-model="${esc(val)}">${esc(text)}${sub ? `<small>${esc(sub)}</small>` : ""}</span>`;
+  let items = item("", `照工作流設定：${w.provider === "auto" ? "自動" : shortName(w.model, w.provider)}`) + item("auto|", "自動", "依優先順序和用量挑");
+  for (const [p, v] of Object.entries(PROV)) {
+    if (!v.ok) continue;
+    const d = v.default_model || "";
+    items += `<div class="mh">${esc(v.label || p)}</div>` + item(`${p}|`, `預設${d ? `（${shortName(d, p)}）` : ""}`);
+    for (const m of (v.models || []).filter(x => x !== d && !/embed/i.test(x)).slice(0, 12)) items += item(`${p}|${m}`, shortName(m, p));
+  }
+  return `<div class="dd"><button class="ghost model-btn ${cur ? "on" : ""}" data-toggle="model-pick" title="這次要用哪個模型（只套用在下一次執行）">模型 <b>${esc(label)}</b> ▾</button>
+    <div class="menu right" id="model-pick">${items}<div class="sep"></div><span class="plain" style="pointer-events:none;color:var(--muted);font-size:12px">只套用在下一次執行；工作流本身的設定不會改</span></div></div>`;
+}
+
 // 執行列：獨立的二級選單，按鈕只顯示目前等級，滑桿在選單裡
 function depthMenu(v) {
   const d = depthInfo(v);
@@ -1300,10 +1323,19 @@ document.addEventListener("click", async e => {
   if (e.target.closest("[data-run]")) {
     const b = e.target.closest("[data-run]"), inp = document.querySelector("#wf-actions .runin");
     b.disabled = true;
-    await post(`/api/workflows/${encodeURIComponent(selWf)}/run`, {input: inp?.value || "", depth: runDepth[selWf] ?? WF[selWf]?.depth ?? 3});
-    delete runDepth[selWf];                                   // 臨時調的只算這一次，下次回到工作流的預設
+    const [provider, model] = (runModel[selWf] || "|").split("|");
+    const res = await post(`/api/workflows/${encodeURIComponent(selWf)}/run`,
+      {input: inp?.value || "", depth: runDepth[selWf] ?? WF[selWf]?.depth ?? 3, ...(provider ? {provider, model} : {})});
+    if (res.error) { toast(res.error); b.disabled = false; return; }
+    delete runDepth[selWf]; delete runModel[selWf];           // 臨時調的只算這一次，下次回到工作流的設定
     if (inp) inp.value = "";
     setTimeout(async () => { selRun = (await j("/api/runs?workflow=" + encodeURIComponent(selWf)))[0]?.id; lastSig = {}; tick(); }, 400);
+    return;
+  }
+  const mp = e.target.closest("[data-run-model]");
+  if (mp) {
+    if (mp.dataset.runModel) runModel[selWf] = mp.dataset.runModel; else delete runModel[selWf];
+    closeMenus(); lastSig.bar = null; tick();
     return;
   }
   const rd = e.target.closest("[data-run-del]");
@@ -1621,9 +1653,9 @@ function providerOptions() {
   for (const [p, v] of Object.entries(PROV)) {
     if (!v.ok) continue;
     const lab = esc(v.label || PROVIDER[p] || p), d = v.default_model || "";
-    out.push(`<option value="${p}|">${lab} · 預設${d ? `（${esc(modelName(d, p).replace(/（.*）$/, ""))}）` : ""}</option>`);
+    out.push(`<option value="${p}|">${lab} · 預設${d ? `（${esc(shortName(d, p))}）` : ""}</option>`);
     for (const m of (v.models || []).filter(x => x !== d && !/embed/i.test(x)).slice(0, 12))
-      out.push(`<option value="${p}|${esc(m)}">${lab} · ${esc(modelName(m, p).replace(/（.*）$/, ""))}</option>`);
+      out.push(`<option value="${p}|${esc(m)}">${lab} · ${esc(shortName(m, p))}</option>`);
   }
   return out.join("") || `<option value="">沒有可用的模型來源</option>`;
 }

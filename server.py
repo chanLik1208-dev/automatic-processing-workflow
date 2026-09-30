@@ -247,7 +247,8 @@ class Api:
                 return self.send({"error": "no such workflow"}, 404)
             action = parts[3] if len(parts) == 4 else ""
             if action == "run":
-                return self.send({"started": engine.start_async(name, "manual", body.get("input", ""), depth=body.get("depth"))})
+                wf = engine.with_model(name, body.get("provider"), body.get("model"))   # 這次臨時換模型（可省略）
+                return self.send({"started": engine.start_async(name, "manual", body.get("input", ""), wf, depth=body.get("depth"))})
             if action == "stop":
                 return self.send({"ok": engine.cancel(name)})
             if action == "save":

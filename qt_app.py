@@ -422,6 +422,62 @@ class DepthMenuButton(QToolButton):
             b.setStyleSheet("border:none;padding:2px 4px;font-size:12.5px;" + (on if lv == v else f"color:{C('muted')}"))
 
 
+class ModelMenuButton(QToolButton):
+    """執行列上的「模型 ▾」：這次要用哪個模型（不選就照工作流的設定），只套用在下一次執行。
+    選項在打開選單時才建，模型狀態有變（例如 LM Studio 載入了新模型）也會跟著更新。"""
+
+    def __init__(self, tab):
+        super().__init__()
+        self.tab = tab
+        self.setPopupMode(QToolButton.InstantPopup)
+        self.setMenu(QMenu(self))
+        self.menu().aboutToShow.connect(self._build)
+
+    def _build(self):
+        m, win, tab = self.menu(), self.tab.win, self.tab
+        m.clear()
+        w = win.wf.get(tab.sel_wf) or {}
+        cur = tab.run_model.get(tab.sel_wf)
+
+        def add(text, val, sub=""):
+            a = m.addAction(text + (f"　{sub}" if sub else ""))
+            a.setCheckable(True)
+            a.setChecked(val == cur)
+            a.triggered.connect(lambda _=False, v=val: self.pick(v))
+        base = "自動" if w.get("provider") == "auto" else short_model(w.get("model") or (win.prov.get(w.get("provider")) or {}).get("default_model") or "")
+        add(f"照工作流設定：{base or win.prov_label(w.get('provider', ''))}", None)
+        add("自動", ("auto", ""), "依優先順序和用量挑")
+        for n, p in win.prov.items():
+            if not p.get("ok"):
+                continue
+            m.addSection(win.prov_label(n))
+            d = p.get("default_model") or ""
+            add("預設" + (f"（{short_model(d)}）" if d else ""), (n, ""))
+            for x in [x for x in (p.get("models") or []) if x != d and "embed" not in x.lower()][:12]:
+                add(short_model(x), (n, x))
+        m.addSeparator()
+        note = m.addAction("只套用在下一次執行；工作流本身的設定不會改")
+        note.setEnabled(False)
+
+    def pick(self, val):
+        if val:
+            self.tab.run_model[self.tab.sel_wf] = val
+        else:
+            self.tab.run_model.pop(self.tab.sel_wf, None)
+        self.refresh()
+
+    def refresh(self):
+        win, tab = self.tab.win, self.tab
+        w = win.wf.get(tab.sel_wf) or {}
+        cur = tab.run_model.get(tab.sel_wf)
+        if cur:
+            name = "自動" if cur[0] == "auto" else short_model(cur[1] or (win.prov.get(cur[0]) or {}).get("default_model") or "") or win.prov_label(cur[0])
+        else:
+            name = "自動" if w.get("provider") == "auto" else short_model(w.get("model") or (win.prov.get(w.get("provider")) or {}).get("default_model") or "") or win.prov_label(w.get("provider", ""))
+        self.setText(f"模型 {name} ▾")
+        self.setStyleSheet(f"QToolButton {{ color:{C('run')}; font-weight:600; }}" if cur else "")
+
+
 def label(text="", role=None, size=None, bold=False, wrap=True):
     l = QLabel(text)
     l.setWordWrap(wrap)
@@ -563,8 +619,10 @@ class WorkflowTab(QWidget):
         self.act_del = m.addAction("刪除這條工作流", self.on_delete)
         self.more.setMenu(m)
         self.depth = DepthMenuButton(lambda v: self.run_depth.__setitem__(self.sel_wf, v))
+        self.run_model = {}                                   # 臨時換的模型 (來源, 模型)：只算下一次執行
+        self.model_btn = ModelMenuButton(self)
         self.run_depth = {}                                   # 臨時調的深度：只算下一次執行
-        for w in (self.combo, self.info, self.enable, self.inp, self.depth, self.run_btn, self.more):
+        for w in (self.combo, self.info, self.enable, self.inp, self.model_btn, self.depth, self.run_btn, self.more):
             h.addWidget(w)
         v.addWidget(bar)
 
@@ -691,6 +749,9 @@ class WorkflowTab(QWidget):
         self.inp.setVisible(w is not None and manual)
         self.run_btn.setVisible(w is not None)
         self.depth.setVisible(w is not None and not w.get("running"))
+        self.model_btn.setVisible(w is not None and not w.get("running"))
+        if w and not self.model_btn.menu().isVisible():
+            self.model_btn.refresh()
         if w and not self.depth.menu().isVisible():
             self.depth.set(self.run_depth.get(self.sel_wf, w.get("depth", 3)))
         if not w:
@@ -916,7 +977,18 @@ class WorkflowTab(QWidget):
         text = self.inp.text()
         self.inp.clear()
         depth = self.run_depth.pop(self.sel_wf, None) or self.depth.value()
-        self.b.post(f"/api/workflows/{self.sel_wf}/run", {"input": text, "depth": depth}, lambda r: self._after_run())
+        body = {"input": text, "depth": depth}
+        pm = self.run_model.pop(self.sel_wf, None)           # 臨時換的模型只算這一次
+        if pm:
+            body.update(provider=pm[0], model=pm[1])
+
+        def done(r):
+            if r and r.get("error"):
+                QMessageBox.warning(self, "沒有開始執行", r["error"])
+                self.run_btn.setEnabled(True)
+                return
+            self._after_run()
+        self.b.post(f"/api/workflows/{self.sel_wf}/run", body, done)
 
     def _after_run(self):
         self.sel_run = None

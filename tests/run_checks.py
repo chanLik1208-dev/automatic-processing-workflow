@@ -54,6 +54,74 @@ def check(name, fn, skip=None):
         results.append(("失敗", name, traceback.format_exc().strip().splitlines()[-1]))
 
 
+def t_dashboard_js():
+    """網頁版的腳本只要有一個語法錯誤，整個頁面就不能用（例如同一個函式裡宣告了兩次同名變數）。"""
+    import re, shutil, subprocess, tempfile
+    node = shutil.which("node")
+    if not node:
+        raise Skip("沒有 node，跳過語法檢查")
+    html = (ROOT / "dashboard.html").read_text(encoding="utf-8")
+    js = max(re.findall(r"<script(?![^>]*src)[^>]*>(.*?)</script>", html, re.S), key=len)
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
+        f.write(js)
+    r = subprocess.run([node, "--check", f.name], capture_output=True, text=True, encoding="utf-8")
+    assert r.returncode == 0, (r.stderr.strip().splitlines() or ["?"])[-1]
+    return f"{len(js):,} 字元的腳本語法正確"
+
+
+def t_run_override_and_delete():
+    """這次臨時換模型（不改工作流檔案）、刪除單筆紀錄（執行中的不能刪、報告搬進垃圾桶）。"""
+    import time as _t
+    wf = engine.with_model("deepseek-research", "codex", "gpt-5.5")
+    assert wf["provider"] == "codex" and wf["model"] == "gpt-5.5", wf
+    assert engine.load_workflows()["deepseek-research"]["provider"] != "codex", "工作流檔案被改到了"
+    assert engine.with_model("deepseek-research", "auto").get("fallback") is None, "自動模式不該帶備援"
+    assert engine.with_model("deepseek-research", None) is None
+    st, j = call("POST", "/api/workflows/deepseek-research/run", {"provider": "nope"})
+    assert st == 400 and "不認得" in j["error"], (st, j)
+    rep = engine.ROOT / "reports" / "check-report.md"
+    rep.write_text("# x", encoding="utf-8")
+    rid = engine._exec("INSERT INTO runs (workflow, provider, model, trigger, status, started) VALUES "
+                       "('tech-news','lmstudio','','manual','success',?)", (_t.time(),))
+    engine.add_step(rid, 0, "tool", "save_report", "{}", str(rep), 1)
+    engine.add_step(rid, 1, "tool", "save_report", "{}", str(engine.ROOT / "config.json"), 1)   # 指到 reports 外面：不能動
+    running = engine._exec("INSERT INTO runs (workflow, provider, model, trigger, status, started) VALUES "
+                           "('tech-news','lmstudio','','manual','running',?)", (_t.time(),))
+    st, j = call("POST", f"/api/runs/{rid}/delete")
+    assert st == 200 and j["moved_reports"] == ["check-report.md"], (st, j)
+    assert (engine.ROOT / "reports" / ".trash" / "check-report.md").exists() and (engine.ROOT / "config.json").exists()
+    assert call("POST", f"/api/runs/{running}/delete")[0] == 409, "執行中的應該不能刪"
+    assert call("POST", "/api/runs/abc/delete")[0] == 400
+    return "換模型不改檔案；刪除會搬走報告、擋住執行中的"
+
+
+def t_mcp_server():
+    """給 ChatGPT 訂閱（codex）用的 MCP 伺服器：列工具、執行、擋掉沒開放的、超過次數上限。"""
+    import json as _j, subprocess, time as _t
+    rid = engine._exec("INSERT INTO runs (workflow, provider, model, trigger, status, started) VALUES "
+                       "('tech-news','codex','','manual','running',?)", (_t.time(),))
+    msgs = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "http_check", "arguments": {"url": "x"}}},
+            {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "system_status", "arguments": {}}},
+            {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "system_status", "arguments": {}}}]
+    exe, args = engine._mcp_command()
+    env = {**os.environ, "AUTOWORKFLOW_HOME": str(engine.ROOT), "AW_MCP_RUN": str(rid),
+           "AW_MCP_SKILLS": "system_status", "AW_MCP_MAX": "2"}
+    r = subprocess.run([exe, *args], input="".join(_j.dumps(m) + "\n" for m in msgs), capture_output=True,
+                       text=True, encoding="utf-8", env=env, timeout=60)
+    out = {m["id"]: m for m in map(_j.loads, r.stdout.splitlines())}         # 每一行都要是 JSON（stdout 沒被弄髒）
+    assert [t["name"] for t in out[2]["result"]["tools"]] == ["system_status"], out[2]
+    assert out[3]["result"]["isError"] and "沒有開放" in out[3]["result"]["content"][0]["text"], out[3]
+    assert not out[4]["result"]["isError"], out[4]
+    assert out[5]["result"]["isError"] and "上限" in out[5]["result"]["content"][0]["text"], out[5]
+    with engine.db() as c:
+        n = c.execute("SELECT COUNT(*) FROM steps WHERE run_id=? AND kind='tool'", (rid,)).fetchone()[0]
+    assert n == 2, f"應該記了 2 個工具步驟，實際 {n}"
+    return "工具清單、權限、次數上限、步驟紀錄都正確"
+
+
 def call(method, path, body=None):
     r = server.call(method, path, body)
     return r["status"], r.get("json")
@@ -350,6 +418,9 @@ def main():
     check("skill 匯入與刪除", t_skill_import)
     check("從 GitHub 匯入 skill", lambda: t_skill_github(a.no_network), skip=net)
     check("工具呼叫 JSON 解析", t_tool_json_parse)
+    check("網頁版腳本語法", t_dashboard_js)
+    check("臨時換模型 / 刪除紀錄", t_run_override_and_delete)
+    check("MCP 伺服器（GPT 用）", t_mcp_server)
     check("自動模式", t_auto_pick)
     check("排程鎖", t_scheduler_lock)
     check("抓網頁", t_fetch, skip=net)

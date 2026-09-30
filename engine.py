@@ -1348,6 +1348,20 @@ _running = set()
 _running_lock = threading.Lock()
 
 
+def with_model(name, provider=None, model=None):
+    """這次執行臨時換模型（不改工作流檔案）：provider 可以是某個來源或 "auto"；沒給就回傳 None（照工作流原本的）。
+    換了主要模型，工作流原本的備援還是留著，除非備援剛好就是換上去的那個來源。"""
+    if not provider:
+        return None
+    if provider != "auto" and provider not in load_config()["providers"]:
+        raise ValueError(f"不認得的模型來源：{provider}")
+    wf = dict(load_workflows()[name], provider=provider, model=str(model or "").strip() or None)
+    if provider == "auto" or wf.get("fallback") == provider:
+        wf.pop("fallback", None)
+        wf.pop("fallback_model", None)
+    return wf
+
+
 def start_async(name, trigger="manual", extra_input="", wf=None, depth=None):
     if depth not in (None, ""):
         parse_depth(depth)                                   # 先檢查，錯了直接回 400，不要開了執行緒才失敗
