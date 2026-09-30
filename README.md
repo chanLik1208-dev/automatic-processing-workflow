@@ -55,6 +55,8 @@ python3 server.py                # 監控頁 http://127.0.0.1:8787
 - `skills/<名稱>/SKILL.md` — 知識型 skill，agent 用 `use_skill` / `read_skill_file` 按需載入
 - `workflows/*.json` — 工作流設定，可以在監控頁上新增、編輯、開關排程
 
+**用我的瀏覽器讀網頁**（設定頁，預設關閉）：一般讀法拿不到正文的網頁（要執行 JavaScript、要登入），改用程式專用的 Chrome / Edge 資料夾去讀；先按「打開登入視窗」登入需要的網站。只讀取頁面文字，不會點擊、輸入或付款，也不碰你平常的瀏覽器。部分網站（例如淘寶）的條款禁止自動化存取，建議一次不要讀太多頁。
+
 內建工具型 skill：`web_search`（DuckDuckGo，不需 key）、`fetch_url`（只取正文）、`github_repo`、`read_rss`、
 `http_check`、`system_status`、`tail_file`、`save_report`、`notify`、`create_workflow`、`use_skill` / `read_skill_file`。
 

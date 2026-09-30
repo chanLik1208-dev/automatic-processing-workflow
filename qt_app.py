@@ -1697,6 +1697,12 @@ class SettingsTab(QScrollArea):
         self.num(f, "搜尋筆數", "search.limit", 1, 15, "", "筆")
         self.sw(f, "GPT 用 OpenAI 官方搜尋", "search.native", "預設關閉。打開後 ChatGPT 訂閱改用 OpenAI 的搜尋：不會被搜尋引擎擋，但它帶著 AI 身分，擋 AI 的網站搜不到也讀不到，結果會偏向肯給 AI 看的來源。")
         self.num(f, "網頁最多讀幾字", "fetch.max_chars", 1000, 100000, "", "字")
+        self.sw(f, "用我的瀏覽器讀網頁", "browser.enabled", "預設關閉。一般讀法拿不到正文（要執行 JavaScript 或要登入）時，改用這個程式專用的瀏覽器去讀；登入狀態來自下面的「登入瀏覽器」。只讀取頁面文字，不會點擊、輸入或付款。")
+        bl = QPushButton("打開登入視窗")
+        bl.clicked.connect(lambda: self.b.post("/api/browser/login", {}, lambda r: self.win.toast(
+            "已打開登入視窗；登入完記得把視窗關掉" if r.get("ok") else r.get("error") or "打不開瀏覽器")))
+        f.addRow("登入瀏覽器", bl)
+        f.addRow("", label("打開一個專用的瀏覽器視窗，在裡面登入需要的網站（例如淘寶），登入完把視窗關掉。這個視窗跟你平常的 Chrome 分開，不會用到你其他的登入。注意：部分網站（例如淘寶）的條款禁止自動化存取，建議一次不要讀太多頁。", "muted"))
         f = self.section(v, "通知與匯出")
         self.sw(f, "桌面通知", "notify.enabled", "關掉後，工作流的「跳通知」會直接略過。")
         self.txt(f, "PDF 用的瀏覽器", "export.browser_path", "留空會自動找 Chrome / Edge / Chromium。")

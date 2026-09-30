@@ -380,6 +380,48 @@ def t_gemini_agy():
     return "舊設定換成 agy；系統提示和對話從標準輸入送出；回覆解析成工具呼叫"
 
 
+def t_browser_read():
+    """「用我的瀏覽器讀網頁」：要執行 JavaScript 才有內容的頁面，關閉時照實說讀不到，打開後用專用瀏覽器讀到正文。"""
+    import http.server, json as _j, socketserver
+    sys.path.insert(0, str(HOME / "skills"))
+    import fetch_url
+    if not fetch_url.find_browser():
+        raise Skip("這台機器沒有 Chrome / Edge")
+    page = ('<!doctype html><html><head><meta charset="utf-8"><title>JS 頁</title></head><body><div id="a"></div>'
+            '<script>setTimeout(function(){document.getElementById("a").innerHTML='
+            '"<article><p>這段正文是 JavaScript 產生的，一般讀法看不到，要瀏覽器執行完才會出現。</p></article>"},300)</script></body></html>')
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(page.encode("utf-8"))
+
+        def log_message(self, *a):
+            pass
+
+    srv = socketserver.TCPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_address[1]}/"
+    conf_path = HOME / "config.json"
+    conf = _j.loads(conf_path.read_text(encoding="utf-8"))
+    try:
+        conf.setdefault("browser", {})["enabled"] = False
+        conf_path.write_text(_j.dumps(conf, ensure_ascii=False), encoding="utf-8")
+        off = fetch_url.run(url)
+        assert off.startswith(fetch_url.NO_TEXT), off
+        conf["browser"]["enabled"] = True
+        conf_path.write_text(_j.dumps(conf, ensure_ascii=False), encoding="utf-8")
+        on = fetch_url.run(url)
+        assert "JavaScript 產生的" in on and "用你登入的瀏覽器" in on, on
+    finally:
+        srv.shutdown()
+        conf["browser"]["enabled"] = False
+        conf_path.write_text(_j.dumps(conf, ensure_ascii=False), encoding="utf-8")
+    return "關閉時照實說讀不到；打開後用專用瀏覽器讀到 JavaScript 產生的正文"
+
+
 def t_update():
     import updater
     assert updater._ver("0.10.0") > updater._ver("0.9.9") > updater._ver("0.2.1"), "版本比較錯誤"
@@ -502,6 +544,7 @@ def main():
     check("抓網頁", t_fetch, skip=net)
     check("搜尋間隔 / 官方搜尋預設關閉", t_search_pacing)
     check("Gemini 訂閱（agy）", t_gemini_agy)
+    check("用我的瀏覽器讀網頁", t_browser_read)
     check("搜尋", t_search, skip=net)
     check("匯出 Word / PDF", t_export)
     check("檢查更新", t_update, skip=net)

@@ -1528,7 +1528,10 @@ async function loadSettings() {
       ${txt("搜尋地區", "search.region", "DuckDuckGo 的地區代碼，例如 tw-tzh、hk-tzh、us-en。")}
       ${num("搜尋筆數", "search.limit", "", "筆")}
       ${sw("GPT 用 OpenAI 官方搜尋", "search.native", "預設關閉。打開後 ChatGPT 訂閱改用 OpenAI 的搜尋：不會被搜尋引擎擋，但它帶著 AI 身分，擋 AI 的網站搜不到也讀不到，結果會偏向肯給 AI 看的來源。")}
-      ${num("網頁最多讀幾字", "fetch.max_chars", "越多模型讀得越完整，但也越慢、越吃記憶體。", "字")}</div>
+      ${num("網頁最多讀幾字", "fetch.max_chars", "越多模型讀得越完整，但也越慢、越吃記憶體。", "字")}
+      ${sw("用我的瀏覽器讀網頁", "browser.enabled", "預設關閉。一般讀法拿不到正文（要執行 JavaScript 或要登入）時，改用這個程式專用的瀏覽器去讀；登入狀態來自下面的「登入瀏覽器」。只讀取頁面文字，不會點擊、輸入或付款。")}
+      <div class="row"><label>登入瀏覽器</label><div><button type="button" class="ghost" data-browser-login>打開登入視窗</button>
+        <div class="hint">打開一個專用的瀏覽器視窗，在裡面登入需要的網站（例如淘寶），登入完把視窗關掉。這個視窗跟你平常的 Chrome 分開，不會用到你其他的登入。注意：部分網站（例如淘寶）的條款禁止自動化存取，建議一次不要讀太多頁。</div></div></div></div>
     <div class="panel st-sec"><h3>通知與匯出</h3>
       ${sw("桌面通知", "notify.enabled", "關掉後，工作流的「跳通知」會直接略過。")}
       ${txt("PDF 用的瀏覽器", "export.browser_path", "留空會自動找 Chrome / Edge / Chromium。", "例如 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome")}</div>
@@ -1884,6 +1887,12 @@ async function startUpdate() {
   }
 }
 document.addEventListener("click", async e => {
+  if (e.target.closest("[data-browser-login]")) {
+    e.preventDefault();
+    const r = await post("/api/browser/login", {});
+    toast(r.ok ? "已打開登入視窗；登入完記得把視窗關掉" : (r.error || "打不開瀏覽器"), 4000);
+    return;
+  }
   if (e.target.closest("[data-up-check]")) { e.preventDefault(); $("#up-status").textContent = "檢查中…"; showUpdate(await post("/api/update/check", {})); }
   if (e.target.closest("[data-up-install]")) { e.preventDefault(); startUpdate(); }
 });
