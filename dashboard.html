@@ -134,7 +134,9 @@ textarea { width: 100%; resize: vertical; line-height: 1.6; }
 .switch input:checked + .tr::after { transform: translateX(14px); }
 .bar .runin { width: 260px; }
 /* 輸入框可以換行（Enter 換行、Ctrl/⌘+Enter 直接執行），打多了自動長高 */
-textarea.runin { resize: none; min-height: 36px; max-height: 160px; line-height: 1.45; padding: 7px 10px; overflow-y: auto; vertical-align: middle; display: block; }
+textarea.runin { resize: none; min-height: 40px; max-height: 200px; line-height: 1.5; padding: 8px 12px; overflow-y: auto; display: block; }
+/* 輸入框自己一整行，放在執行列最下面（其他按鈕留在上面那行） */
+.bar textarea.runin { order: 99; flex: 1 1 100%; width: auto; }
 .attach-btn .n { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 9px; background: var(--accent); color: var(--accent-ink); font-size: 12px; font-weight: 600; }
 .att-pop { padding: 8px 10px 10px; display: grid; gap: 8px; }
 .att-pop .ah { font-weight: 600; font-size: 13.5px; }
@@ -723,7 +725,7 @@ function renderBar() {
   const keep = document.querySelector("#wf-actions .runin")?.value || "";
   $("#wf-actions").innerHTML =
     (manual ? "" : `<label class="switch" title="開關排程"><input type="checkbox" data-enable ${w.enabled ? "checked" : ""}><span class="tr"></span>排程</label>`) +
-    (manual ? `<textarea class="runin" rows="1" placeholder="要處理什麼？" title="Enter 換行；Ctrl/⌘+Enter 直接執行">${esc(keep)}</textarea>` : "") +
+    (manual ? `<textarea class="runin" rows="1" placeholder="要處理什麼？（Enter 換行，Ctrl/⌘+Enter 執行）">${esc(keep)}</textarea>` : "") +
     (w.running ? "" : attachMenu() + modelMenu(w) + depthMenu(runDepth[selWf] ?? w.depth ?? 3)) +
     (w.running ? `<button class="ghost" data-stop style="color:var(--bad)">停止</button>` : `<button data-run>立即執行</button>`);
   $("#more-menu").innerHTML = `<span class="plain" data-act="edit">編輯設定</span><span class="plain" data-act="new">＋ 新增工作流</span>
@@ -791,7 +793,7 @@ function refreshAttachMenu() {                            // 選單開著時只�
   const n = attCount(att()), btn = document.querySelector(".attach-btn");
   if (btn) btn.innerHTML = `＋ 附件${n ? `<span class="n">${n}</span>` : ""}`;
 }
-function growRunin(t) { t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight + 2, 160) + "px"; }
+function growRunin(t) { t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight + 2, 200) + "px"; }
 document.addEventListener("input", e => {
   if (e.target.matches?.("textarea.runin, .cont textarea")) growRunin(e.target);
   if (e.target.id === "att-folder") { att().folder = e.target.value; const b = document.querySelector(".attach-btn"), n = attCount(att());
@@ -1132,7 +1134,7 @@ function renderDetail(d) {
   const keepCont = document.querySelector(".cont textarea")?.value || "";
   const a = r.attachments || {};
   const attLine = [a.folder ? `資料夾 ${esc(a.folder)}` : "", a.images?.length ? `圖片 ${a.images.map(esc).join("、")}` : ""].filter(Boolean).join("；");
-  const done = r.status !== "running";
+  const done = r.status !== "running" && !String(r.workflow).startsWith("skill:");   // skill 試用沒有工作流可以接續或重跑
   const contBox = !done ? "" : `<div class="section">接著做</div><div class="cont">
       ${r.can_continue ? `<textarea placeholder="接著問、要求修改或補充…（保留上面的整段對話；Ctrl/⌘+Enter 送出）">${esc(keepCont)}</textarea>` :
         `<div class="muted">這筆是舊版跑的，沒有保存對話內容，不能接著繼續；可以重新生成。</div>`}
@@ -1519,7 +1521,8 @@ document.addEventListener("click", async e => {
     if (res.error) { toast(res.error); cb.disabled = false; return; }
     if (cont) { delete ATT[selWf]; delete runModel[selWf]; box.value = ""; box.blur(); lastSig.bar = null; }
     toast(cont ? "已接著繼續，看上面「現在」那一區" : "已重新生成，看上面「現在」那一區");
-    setTimeout(async () => { selRun = (await j("/api/runs?workflow=" + encodeURIComponent(selWf)))[0]?.id; lastSig = {}; tick(); }, 400);
+    // 在「全部工作流」裡也可以繼續：沒選工作流時就看全部紀錄最新的那筆（不能送 workflow=null）
+    setTimeout(async () => { selRun = (await j(selWf ? "/api/runs?workflow=" + encodeURIComponent(selWf) : "/api/runs"))[0]?.id; lastSig = {}; tick(); }, 400);
     return;
   }
   const mp = e.target.closest("[data-run-model]");

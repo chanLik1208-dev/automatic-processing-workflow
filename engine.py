@@ -523,8 +523,7 @@ def chat(provider, model, messages, tools, live=None, timeout=None, max_tokens=N
     if p.get("type") == "cli":
         return chat_cli(p, model, messages, tools, live if live is not None else {}, cfg("limits.cli_timeout", 600))
     # 一定要有上限：模型偶爾會鬼打牆地一直生成，沒上限就會一路寫到 context 滿
-    if live and live.get("_images"):
-        messages = _with_images(messages, live["_images"], live.get("_img_idx"))
+    messages = _api_messages(messages)
     body = {"model": model or p["default_model"] or _loaded_model(p), "messages": messages, "temperature": 0.3,
             "max_tokens": max_tokens, "stream": True, "stream_options": {"include_usage": True}}
     if tools:
@@ -1359,17 +1358,27 @@ def _image_b64(path):
     return base64.b64encode(pathlib.Path(path).read_bytes()).decode()
 
 
-def _with_images(messages, images, idx):
-    """OpenAI 相容 API：把圖片加進這次執行的那則使用者訊息（其他訊息不動）。"""
-    if not images or idx is None or idx >= len(messages):
-        return messages
-    out = list(messages)
-    m = out[idx]
-    parts = [{"type": "text", "text": m["content"]}]
-    for x in images:
-        mime = IMAGE_TYPES.get(pathlib.Path(x).suffix.lower(), "image/png")
-        parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{_image_b64(x)}"}})
-    out[idx] = {**m, "content": parts}
+# 圖片記在「附上它的那則使用者訊息」的 _images 欄位（存進對話紀錄）：之後「繼續」時，前面附過的圖片模型也還看得到。
+# 送出前一律拿掉 _ 開頭的欄位（API 不認得）；OpenAI 相容 API 把有 _images 的訊息轉成「文字 + 圖片」。
+def conversation_images(messages):
+    out = []
+    for m in messages:
+        out += [x for x in m.get("_images") or [] if os.path.isfile(x) and x not in out]
+    return out
+
+
+def _api_messages(messages):
+    out = []
+    for m in messages:
+        clean = {k: v for k, v in m.items() if not k.startswith("_")}
+        imgs = [x for x in m.get("_images") or [] if os.path.isfile(x)]
+        if imgs:
+            parts = [{"type": "text", "text": m["content"]}]
+            for x in imgs:
+                mime = IMAGE_TYPES.get(pathlib.Path(x).suffix.lower(), "image/png")
+                parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{_image_b64(x)}"}})
+            clean["content"] = parts
+        out.append(clean)
     return out
 
 
@@ -1431,6 +1440,14 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
     prev = run_messages(parent) if parent else None
     if parent and not prev:
         raise ValueError("這筆紀錄沒有保存對話內容（比較舊的版本跑的），沒辦法接著繼續")
+    if prev and not att["folder"]:
+        # 對話裡談的是上一次附的資料夾：繼續時沒有另外附，就沿用那個（還在的話），模型才讀得到
+        pf = ((run_params(parent)[1].get("attachments") or {}).get("folder") or "")
+        if pf and os.path.isdir(pf):
+            att["folder"] = pf
+            if "read_folder" in skills and "read_folder" not in allowed:
+                allowed.append("read_folder")
+                tools.append({"type": "function", "function": skills["read_folder"].SPEC})
     if prev:
         # 繼續：沿用上一次的整段對話（系統提示也用上一次的），把新的輸入接在後面
         task = (extra_input or "").strip() or "請繼續。"
@@ -1445,7 +1462,8 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
         if depth_note:
             task += f"\n\n{depth_note}"
         messages = [{"role": "system", "content": system}, {"role": "user", "content": task}]
-    user_idx = len(messages) - 1                         # 圖片要加在這則
+    if att["images"]:
+        messages[-1]["_images"] = att["images"]           # 這次附的圖片記在這則訊息上
 
     auto = wf.get("provider") == "auto"
     auto_note, tried = None, []
@@ -1464,7 +1482,7 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
     idx, tin, tout = 0, 0, 0
     live = LIVE[run_id] = {"run_id": run_id, "workflow": name, "title": wf.get("title", name),
                            "started": time.time(), "round": 0, "provider": provider, "model": model or "",
-                           "_max_steps": wf["max_steps"], "_images": att["images"], "_img_idx": user_idx,
+                           "_max_steps": wf["max_steps"], "_images": conversation_images(messages),   # 訂閱 CLI：整段對話附過的圖片
                            "_folders": [att["folder"]] if att["folder"] else []}
 
     fails, first_err = 0, None

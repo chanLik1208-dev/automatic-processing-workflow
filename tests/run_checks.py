@@ -532,6 +532,9 @@ def t_attach_continue():
             time.sleep(0.1)
         msgs = reqs[n]["messages"]
         assert msgs[-1]["content"].startswith("再短一點") and any(m.get("role") == "tool" for m in msgs), msgs[-1]
+        assert isinstance(msgs[1]["content"], list), "繼續時，前面附過的圖片模型要還看得到"
+        assert not any(k.startswith("_") for m in msgs for k in m), "送給 API 的訊息不能帶內部欄位"
+        assert "read_folder" in [t["function"]["name"] for t in reqs[n].get("tools") or []], "繼續時要沿用上次附的資料夾"
         # 重新生成第一次：同樣的輸入和附件
         n = len(reqs)
         assert engine.regenerate_run(rid)

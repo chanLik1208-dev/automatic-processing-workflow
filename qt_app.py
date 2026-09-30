@@ -432,6 +432,7 @@ class PromptEdit(QPlainTextEdit):
         self.setPlaceholderText(placeholder)
         self.setToolTip("Enter 換行；Ctrl/⌘+Enter 直接送出")
         self.setTabChangesFocus(True)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)   # 在上限以內自動長高，不需要捲軸；超過才出現
         self.document().contentsChanged.connect(self._fit)
         self._fit()
 
@@ -445,7 +446,9 @@ class PromptEdit(QPlainTextEdit):
         super().keyPressEvent(ev)
 
     def _fit(self):
-        lines = max(1, min(self.max_lines, int(self.document().size().height())))
+        need = max(1, int(self.document().size().height()))
+        lines = min(self.max_lines, need)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded if need > self.max_lines else Qt.ScrollBarAlwaysOff)
         self.setFixedHeight(self.fontMetrics().lineSpacing() * lines + 18)
 
 
@@ -718,7 +721,9 @@ class WorkflowTab(QWidget):
         # 工具列
         bar = QFrame()
         bar.setObjectName("panel")
-        h = QHBoxLayout(bar)
+        bv = QVBoxLayout(bar)                                 # 上面一行放選單和按鈕，輸入框自己一整行在下面
+        h = QHBoxLayout()
+        bv.addLayout(h)
         self.combo = QComboBox()
         self.combo.setObjectName("picker")
         self.combo.setMinimumWidth(220)
@@ -728,8 +733,7 @@ class WorkflowTab(QWidget):
         self.info.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.enable = QCheckBox("排程")
         self.enable.toggled.connect(self.on_enable)
-        self.inp = PromptEdit("要處理什麼？", self.on_run)
-        self.inp.setMinimumWidth(240)
+        self.inp = PromptEdit("要處理什麼？（Enter 換行，Ctrl/⌘+Enter 執行）", self.on_run, max_lines=8)
         self.run_att = {}                                     # 附件（資料夾、圖片）：只算下一次執行
         self.attach_btn = AttachMenuButton(self)
         self.run_btn = QPushButton("立即執行")
@@ -748,8 +752,9 @@ class WorkflowTab(QWidget):
         self.run_model = {}                                   # 臨時換的模型 (來源, 模型)：只算下一次執行
         self.model_btn = ModelMenuButton(self)
         self.run_depth = {}                                   # 臨時調的深度：只算下一次執行
-        for w in (self.combo, self.info, self.enable, self.inp, self.attach_btn, self.model_btn, self.depth, self.run_btn, self.more):
+        for w in (self.combo, self.info, self.enable, self.attach_btn, self.model_btn, self.depth, self.run_btn, self.more):
             h.addWidget(w)
+        bv.addWidget(self.inp)
         v.addWidget(bar)
 
         # 現在
@@ -1004,7 +1009,7 @@ class WorkflowTab(QWidget):
             self.view.verticalScrollBar().setValue(scroll)
         self.export_btn.setEnabled(r["status"] != "running")
         self.del_btn.setEnabled(r["status"] != "running")
-        done = r["status"] != "running"
+        done = r["status"] != "running" and not str(r["workflow"]).startswith("skill:")   # skill 試用沒有工作流可以接續或重跑
         self.cont.setVisible(done)
         can = bool(r.get("can_continue"))
         self.cont_in.setVisible(can)
@@ -1453,7 +1458,9 @@ class SkillsTab(QWidget):
         v.setContentsMargins(0, 8, 0, 0)
         bar = QFrame()
         bar.setObjectName("panel")
-        h = QHBoxLayout(bar)
+        bv = QVBoxLayout(bar)                                 # 上面一行放選單和按鈕，輸入框自己一整行在下面
+        h = QHBoxLayout()
+        bv.addLayout(h)
         imp = QToolButton()
         imp.setText("匯入 skill")
         imp.setPopupMode(QToolButton.InstantPopup)
