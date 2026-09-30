@@ -435,6 +435,41 @@ def t_browser_read():
     return "關閉時照實說讀不到；打開後用專用瀏覽器讀到 JavaScript 產生的正文"
 
 
+def t_search_browser_fallback():
+    """兩個搜尋引擎都把程式當機器人擋掉時：打開「用我的瀏覽器讀網頁」就改用瀏覽器搜；沒打開要提示使用者。"""
+    import json as _j, stat as _st
+    if sys.platform == "win32":
+        raise Skip("假的瀏覽器是 shell 腳本")
+    sys.path.insert(0, str(HOME / "skills"))
+    import web_search
+    fake = HOME / "fake-browser"
+    fake.write_text("#!/bin/sh\ncat <<'HTML'\n<html><body><a rel=\"nofollow\" class=\"result__a\" "
+                    "href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Flmstudio.ai%2F\">LM Studio 本機模型</a>"
+                    "<a class=\"result__snippet\" href=\"x\">在自己的電腦上跑本機模型</a></body></html>\nHTML\n")
+    fake.chmod(fake.stat().st_mode | _st.S_IEXEC)
+    conf_path = HOME / "config.json"
+    conf = _j.loads(conf_path.read_text(encoding="utf-8"))
+    saved = (web_search._search, web_search.time.sleep)
+    web_search._search = lambda q, l: ([], "", ["DuckDuckGo", "Bing"])
+    web_search.time.sleep = lambda s: None
+    try:
+        conf.setdefault("browser", {})["enabled"] = False
+        conf.setdefault("export", {})["browser_path"] = str(fake)
+        conf_path.write_text(_j.dumps(conf, ensure_ascii=False), encoding="utf-8")
+        off = web_search.run("LM Studio 本機模型")
+        assert off.startswith("[搜尋被擋]") and "用我的瀏覽器讀網頁" in off, off
+        conf["browser"]["enabled"] = True
+        conf_path.write_text(_j.dumps(conf, ensure_ascii=False), encoding="utf-8")
+        on = web_search.run("LM Studio 本機模型")
+        assert "https://lmstudio.ai/" in on and "用你的瀏覽器" in on, on
+    finally:
+        web_search._search, web_search.time.sleep = saved
+        conf["browser"]["enabled"] = False
+        conf["export"]["browser_path"] = ""
+        conf_path.write_text(_j.dumps(conf, ensure_ascii=False), encoding="utf-8")
+    return "被擋時：關閉會提示打開；打開後改用瀏覽器搜到結果"
+
+
 def t_update():
     import updater
     assert updater._ver("0.10.0") > updater._ver("0.9.9") > updater._ver("0.2.1"), "版本比較錯誤"
@@ -558,6 +593,7 @@ def main():
     check("搜尋間隔 / 官方搜尋預設關閉", t_search_pacing)
     check("Gemini 訂閱（agy）", t_gemini_agy)
     check("用我的瀏覽器讀網頁", t_browser_read)
+    check("搜尋被擋改用瀏覽器", t_search_browser_fallback)
     check("搜尋", t_search, skip=net)
     check("匯出 Word / PDF", t_export)
     check("檢查更新", t_update, skip=net)
