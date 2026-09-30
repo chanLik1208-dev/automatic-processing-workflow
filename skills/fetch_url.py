@@ -171,8 +171,8 @@ def find_browser():
     return next((c for c in cands if c and os.path.exists(c)), None)
 
 
-def _browser_dom(url):
-    """回傳 (html, 錯誤訊息)。"""
+def _browser_dom(url, limit=60):
+    """回傳 (html, 錯誤訊息)。limit：最多等幾秒。"""
     browser = find_browser()
     if not browser:
         return "", "找不到 Chrome / Edge，沒辦法用瀏覽器讀"
@@ -201,7 +201,7 @@ def _browser_dom(url):
                threading.Thread(target=pump, args=(proc.stderr, err, False), daemon=True)]
     for t in threads:
         t.start()
-    deadline = time.time() + 60
+    deadline = time.time() + limit
     while proc.poll() is None and time.time() < deadline:
         if b"</html>" in b"".join(chunks[-3:]).lower() and time.time() - last[0] > 1.2:
             break
@@ -220,7 +220,7 @@ def _browser_dom(url):
     dom = b"".join(chunks).decode("utf-8", errors="replace")
     if not dom.strip():
         if timed_out:
-            return "", "瀏覽器讀了 60 秒還沒讀完"
+            return "", f"瀏覽器讀了 {limit} 秒還沒讀完"
         # 同一個瀏覽器資料夾只能有一個瀏覽器在用：登入用的視窗還開著時，背景讀取會拿到空的
         why = [l for l in b"".join(err).decode("utf-8", errors="replace").splitlines() if "ERROR" in l or "rror:" in l][-1:]
         return "", "瀏覽器沒有回傳內容；如果「登入瀏覽器」的視窗還開著，先把它關掉再試" + (f"（{why[0][-160:]}）" if why else "")

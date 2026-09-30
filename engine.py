@@ -1,4 +1,5 @@
 """Agent 執行引擎：讀 workflow → 跑 tool-calling 迴圈 → 每一步寫進 SQLite。"""
+import base64
 import datetime
 import importlib.util
 import shutil
@@ -218,8 +219,13 @@ def init_db():
             input TEXT, output TEXT, ts REAL, ms INTEGER
         );
         """)
-        if "depth" not in {r[1] for r in c.execute("PRAGMA table_info(runs)")}:
+        cols = {r[1] for r in c.execute("PRAGMA table_info(runs)")}
+        if "depth" not in cols:
             c.execute("ALTER TABLE runs ADD COLUMN depth INTEGER")          # 舊資料庫：補上這次執行用的深度
+        if "params" not in cols:                # 這次執行的參數（額外輸入、附件、臨時換的模型、接續哪一次）：重新生成用
+            c.execute("ALTER TABLE runs ADD COLUMN params TEXT")
+        if "messages" not in cols:              # 跑完時的完整對話：「繼續」從這裡接下去
+            c.execute("ALTER TABLE runs ADD COLUMN messages TEXT")
         # 程式重啟時，上次沒跑完的標成 interrupted
         c.execute("UPDATE runs SET status='interrupted' WHERE status='running'")
 
@@ -517,6 +523,7 @@ def chat(provider, model, messages, tools, live=None, timeout=None, max_tokens=N
     if p.get("type") == "cli":
         return chat_cli(p, model, messages, tools, live if live is not None else {}, cfg("limits.cli_timeout", 600))
     # 一定要有上限：模型偶爾會鬼打牆地一直生成，沒上限就會一路寫到 context 滿
+    messages = _api_messages(messages)
     body = {"model": model or p["default_model"] or _loaded_model(p), "messages": messages, "temperature": 0.3,
             "max_tokens": max_tokens, "stream": True, "stream_options": {"include_usage": True}}
     if tools:
@@ -746,6 +753,8 @@ def chat_codex(p, model, messages, tools, live, timeout=600):
         cmd += ["-c", f'model_reasoning_effort="{p["effort"]}"']
     if model:
         cmd += ["-m", model]
+    for img in live.get("_images") or []:              # 附上的圖片：codex 自己的附圖參數
+        cmd += ["-i", img]
     cmd += ["-c", 'web_search="live"' if native_search else 'web_search="disabled"']
     # Windows 命令列上限約 32,000 字：系統提示太長就改放在輸入最前面
     long_system = len(system) > 20000
@@ -754,7 +763,8 @@ def chat_codex(p, model, messages, tools, live, timeout=600):
     if names and live.get("run_id"):
         exe, args = _mcp_command()
         env = {"AW_MCP_RUN": str(live["run_id"]), "AW_MCP_SKILLS": ",".join(names),
-               "AW_MCP_MAX": str(live.get("_max_steps", 12)), "AUTOWORKFLOW_HOME": str(ROOT)}
+               "AW_MCP_MAX": str(live.get("_max_steps", 12)), "AUTOWORKFLOW_HOME": str(ROOT),
+               "AW_FOLDERS": os.pathsep.join(live.get("_folders") or [])}
         s = "mcp_servers.autoworkflow"
         cmd += ["-c", f"{s}.command={json.dumps(exe)}", "-c", f"{s}.args={json.dumps(args)}",
                 "-c", f"{s}.env={{" + ",".join(f"{k}={json.dumps(v)}" for k, v in env.items()) + "}",
@@ -844,6 +854,9 @@ def chat_cli(p, model, messages, tools, live, timeout=600):
     # Windows 的命令列上限約 32,000 字元：系統提示太長就改放在標準輸入最前面（標準輸入沒有長度限制）
     long_system = len(system) > 24000
     cmd += ["--system-prompt", "嚴格遵守輸入開頭「## 系統指示」區塊裡的所有指示，那就是你的系統提示。" if long_system else system]
+    images = live.get("_images") or []
+    if images:
+        cmd += ["--input-format", "stream-json"]     # 圖片要用結構化輸入才送得進去
     tmp = tempfile.mkdtemp(prefix="wf-cli-")         # 在空資料夾執行，不會讀到任何專案的 CLAUDE.md / 設定
     proc = subprocess.Popen(cmd, cwd=tmp, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8")
@@ -852,7 +865,14 @@ def chat_cli(p, model, messages, tools, live, timeout=600):
     killer.start()
     text, thinking, usage, result, err = "", "", {}, None, None
     try:
-        proc.stdin.write((f"## 系統指示\n{system}\n\n" if long_system else "") + _transcript(messages))
+        prompt = (f"## 系統指示\n{system}\n\n" if long_system else "") + _transcript(messages)
+        if images:
+            content = [{"type": "text", "text": prompt}] + [
+                {"type": "image", "source": {"type": "base64", "media_type": IMAGE_TYPES.get(pathlib.Path(x).suffix.lower(), "image/png"),
+                                             "data": _image_b64(x)}} for x in images]
+            proc.stdin.write(json.dumps({"type": "user", "message": {"role": "user", "content": content}}, ensure_ascii=False) + "\n")
+        else:
+            proc.stdin.write(prompt)
         proc.stdin.close()
         for line in proc.stdout:
             try:
@@ -899,6 +919,9 @@ def chat_agy(p, model, system, messages, live, timeout=600, has_tools=True):
     agy 內建的搜尋和開網頁是 Google 的伺服器帶 AI 身分去抓，會被差別對待。
     agy 沒有系統提示的參數，所以系統提示放在輸入最前面；輸入用 stream-json 從標準輸入送（沒有命令列長度限制）。
     在空資料夾執行：它內建的檔案工具在工作區裡會自動核准，空資料夾用完就刪。"""
+    if live.get("_images"):
+        # agy 的輸入格式沒有公開的附圖方式：明講，讓備援（支援圖片的來源）接手，不要默默把圖片丟掉
+        raise RuntimeError("Gemini 訂閱（agy）目前還不能附圖片；這次請改用 ChatGPT / Claude 訂閱或支援圖片的本機模型")
     cmd = [cli_exe(p), "--input-format", "stream-json", "--output-format", "stream-json",
            "--sandbox", "--disable-slash-commands"]
     if model:
@@ -1306,7 +1329,83 @@ def next_idx(run_id):
     return 0 if r is None else r + 1
 
 
-def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None):
+# ---------- 附件（資料夾、圖片） ----------
+# 資料夾：這次執行的 read_folder 只能讀這個資料夾。主程式在執行緒裡記住；ChatGPT 的 MCP 伺服器是另一個行程，用環境變數傳
+_ctx = threading.local()
+IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+
+
+def run_folders():
+    return list(getattr(_ctx, "folders", None) or [])
+
+
+def check_attachments(att):
+    """檢查附件、整理成 {"folder": 路徑或"", "images": [路徑]}；有問題直接丟 ValueError（在開始執行前就擋下）。"""
+    att = att or {}
+    folder = os.path.expanduser(str(att.get("folder") or "").strip())
+    if folder:
+        if not os.path.isdir(folder):
+            raise ValueError(f"找不到這個資料夾：{folder}")
+        folder = os.path.realpath(folder)
+    images = [str(x) for x in att.get("images") or []]
+    for x in images:
+        if not os.path.isfile(x) or pathlib.Path(x).suffix.lower() not in IMAGE_TYPES:
+            raise ValueError(f"圖片讀不到或格式不支援：{os.path.basename(x)}")
+    return {"folder": folder, "images": images}
+
+
+def _image_b64(path):
+    return base64.b64encode(pathlib.Path(path).read_bytes()).decode()
+
+
+# 圖片記在「附上它的那則使用者訊息」的 _images 欄位（存進對話紀錄）：之後「繼續」時，前面附過的圖片模型也還看得到。
+# 送出前一律拿掉 _ 開頭的欄位（API 不認得）；OpenAI 相容 API 把有 _images 的訊息轉成「文字 + 圖片」。
+def conversation_images(messages):
+    out = []
+    for m in messages:
+        out += [x for x in m.get("_images") or [] if os.path.isfile(x) and x not in out]
+    return out
+
+
+def _api_messages(messages):
+    out = []
+    for m in messages:
+        clean = {k: v for k, v in m.items() if not k.startswith("_")}
+        imgs = [x for x in m.get("_images") or [] if os.path.isfile(x)]
+        if imgs:
+            parts = [{"type": "text", "text": m["content"]}]
+            for x in imgs:
+                mime = IMAGE_TYPES.get(pathlib.Path(x).suffix.lower(), "image/png")
+                parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{_image_b64(x)}"}})
+            clean["content"] = parts
+        out.append(clean)
+    return out
+
+
+def run_messages(run_id):
+    """某次執行跑完時的完整對話（「繼續」用）；舊的執行沒有存就回傳 None。"""
+    with db() as c:
+        r = c.execute("SELECT messages FROM runs WHERE id=?", (run_id,)).fetchone()
+    try:
+        return json.loads(r[0]) if r and r[0] else None
+    except ValueError:
+        return None
+
+
+def run_params(run_id):
+    with db() as c:
+        r = c.execute("SELECT workflow, params, input, depth FROM runs WHERE id=?", (run_id,)).fetchone()
+    if not r:
+        raise ValueError("找不到這筆紀錄")
+    try:
+        params = json.loads(r[1]) if r[1] else {}
+    except ValueError:
+        params = {}
+    return r[0], params, r[2], r[3]
+
+
+def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, attachments=None, parent=None):
+    att = check_attachments(attachments)
     wf = dict(wf) if wf else load_workflows()[name]
     wf.setdefault("max_steps", cfg("limits.max_steps", 12))
     # 工作流檔案被手動改成奇怪的值（例如 7）：當作「標準」，不要整個執行失敗
@@ -1314,6 +1413,8 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None):
     depth_note = apply_depth(wf, level, bool(RESEARCH_SKILLS & set(wf.get("skills", []))))
     skills = load_skills()
     allowed = [s for s in wf.get("skills", []) if s in skills]
+    if att["folder"] and "read_folder" in skills and "read_folder" not in allowed:
+        allowed.append("read_folder")                   # 附了資料夾就給讀資料夾的工具（只限這次、只限那個資料夾）
     tools = [{"type": "function", "function": skills[s].SPEC} for s in allowed]
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
@@ -1331,11 +1432,38 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None):
     task = wf["task"]
     if wf.get("description"):
         task = f"（這個工作流的說明：{wf['description']}）\n\n{task}"
-    if extra_input:
-        task += f"\n\n額外輸入：{extra_input}"
-    if depth_note:
-        task += f"\n\n{depth_note}"
-    messages = [{"role": "system", "content": system}, {"role": "user", "content": task}]
+    notes = []
+    if att["folder"]:
+        notes.append(f"使用者附上了一個資料夾：{att['folder']}。需要時用 read_folder 工具列出和讀取裡面的檔案（只能讀這個資料夾）。")
+    if att["images"]:
+        notes.append(f"使用者附上了 {len(att['images'])} 張圖片（{'、'.join(os.path.basename(x) for x in att['images'])}），跟這則訊息一起給你了。")
+    prev = run_messages(parent) if parent else None
+    if parent and not prev:
+        raise ValueError("這筆紀錄沒有保存對話內容（比較舊的版本跑的），沒辦法接著繼續")
+    if prev and not att["folder"]:
+        # 對話裡談的是上一次附的資料夾：繼續時沒有另外附，就沿用那個（還在的話），模型才讀得到
+        pf = ((run_params(parent)[1].get("attachments") or {}).get("folder") or "")
+        if pf and os.path.isdir(pf):
+            att["folder"] = pf
+            if "read_folder" in skills and "read_folder" not in allowed:
+                allowed.append("read_folder")
+                tools.append({"type": "function", "function": skills["read_folder"].SPEC})
+    if prev:
+        # 繼續：沿用上一次的整段對話（系統提示也用上一次的），把新的輸入接在後面
+        task = (extra_input or "").strip() or "請繼續。"
+        if notes:
+            task += "\n\n" + "\n".join(notes)
+        messages = prev + [{"role": "user", "content": task}]
+    else:
+        if extra_input:
+            task += f"\n\n額外輸入：{extra_input}"
+        if notes:
+            task += "\n\n" + "\n".join(notes)
+        if depth_note:
+            task += f"\n\n{depth_note}"
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": task}]
+    if att["images"]:
+        messages[-1]["_images"] = att["images"]           # 這次附的圖片記在這則訊息上
 
     auto = wf.get("provider") == "auto"
     auto_note, tried = None, []
@@ -1346,12 +1474,16 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None):
             provider, model, auto_note = "auto", None, str(e)
     else:
         provider, model = wf.get("provider", "lmstudio"), wf.get("model")
-    run_id = _exec("INSERT INTO runs (workflow, provider, model, trigger, status, started, input, depth) VALUES (?,?,?,?,?,?,?,?)",
-                   (name, provider, model or "", trigger, "running", time.time(), task, level))
+    params = {"extra_input": extra_input or "", "attachments": att, "parent": parent,
+              "provider": wf.get("provider") if wf.get("_override") else None, "model": wf.get("model") if wf.get("_override") else None}
+    run_id = _exec("INSERT INTO runs (workflow, provider, model, trigger, status, started, input, depth, params) VALUES (?,?,?,?,?,?,?,?,?)",
+                   (name, provider, model or "", trigger, "running", time.time(), task, level, json.dumps(params, ensure_ascii=False)))
+    _ctx.folders = [att["folder"]] if att["folder"] else []
     idx, tin, tout = 0, 0, 0
     live = LIVE[run_id] = {"run_id": run_id, "workflow": name, "title": wf.get("title", name),
                            "started": time.time(), "round": 0, "provider": provider, "model": model or "",
-                           "_max_steps": wf["max_steps"]}
+                           "_max_steps": wf["max_steps"], "_images": conversation_images(messages),   # 訂閱 CLI：整段對話附過的圖片
+                           "_folders": [att["folder"]] if att["folder"] else []}
 
     fails, first_err = 0, None
     used = {mkey(provider, model)}                     # 這次執行用過的 (來源, 模型)，不會重複換回去
@@ -1449,8 +1581,35 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None):
               (time.time(), msg, tin, tout, run_id))
         return run_id
     finally:
+        # 存下整段對話，之後可以「繼續」；太長就不存（避免資料庫一直變大），繼續時會說明
+        try:
+            dump = json.dumps(messages, ensure_ascii=False)
+            if len(dump) < 3_000_000:
+                _exec("UPDATE runs SET messages=? WHERE id=?", (dump, run_id))
+        except Exception:
+            pass
+        _ctx.folders = []
         LIVE.pop(run_id, None)
         _cancel.discard(run_id)
+
+
+def continue_run(run_id, text, attachments=None, provider=None, model=None, depth=None):
+    """接著某次執行繼續：沿用那次的整段對話，加上新的輸入。"""
+    name, _, _, level = run_params(run_id)
+    if name not in load_workflows():
+        raise ValueError("這條工作流已經刪掉了（或是 skill 試用，請到 skill 頁重新試用）")
+    wf = with_model(name, provider, model) if provider else None
+    return start_async(name, "manual", text, wf, depth if depth not in (None, "") else level, attachments, parent=run_id)
+
+
+def regenerate_run(run_id):
+    """重新生成：同樣的輸入、附件、模型、深度，（如果那次是接續的）也接在同一段對話後面，再跑一次。"""
+    name, params, _, level = run_params(run_id)
+    if name not in load_workflows():
+        raise ValueError("這條工作流已經刪掉了（或是 skill 試用，請到 skill 頁重新試用）")
+    wf = with_model(name, params.get("provider"), params.get("model")) if params.get("provider") else None
+    return start_async(name, "manual", params.get("extra_input", ""), wf, level,
+                       params.get("attachments"), parent=params.get("parent"))
 
 
 # ---------- 排程 ----------
@@ -1489,16 +1648,19 @@ def with_model(name, provider=None, model=None):
         return None
     if provider != "auto" and provider not in load_config()["providers"]:
         raise ValueError(f"不認得的模型來源：{provider}")
-    wf = dict(load_workflows()[name], provider=provider, model=str(model or "").strip() or None)
+    wf = dict(load_workflows()[name], provider=provider, model=str(model or "").strip() or None, _override=True)
     if provider == "auto" or wf.get("fallback") == provider:
         wf.pop("fallback", None)
         wf.pop("fallback_model", None)
     return wf
 
 
-def start_async(name, trigger="manual", extra_input="", wf=None, depth=None):
+def start_async(name, trigger="manual", extra_input="", wf=None, depth=None, attachments=None, parent=None):
     if depth not in (None, ""):
         parse_depth(depth)                                   # 先檢查，錯了直接回 400，不要開了執行緒才失敗
+    attachments = check_attachments(attachments)
+    if parent and not run_messages(parent):
+        raise ValueError("這筆紀錄沒有保存對話內容（比較舊的版本跑的），沒辦法接著繼續")
     with _running_lock:
         if name in _running:
             return False
@@ -1506,7 +1668,7 @@ def start_async(name, trigger="manual", extra_input="", wf=None, depth=None):
 
     def job():
         try:
-            run_workflow(name, trigger, extra_input, wf, depth)
+            run_workflow(name, trigger, extra_input, wf, depth, attachments, parent)
         finally:
             _running.discard(name)
     threading.Thread(target=job, daemon=True).start()

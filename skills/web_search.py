@@ -1,4 +1,4 @@
-import base64, html, http.cookiejar, json, pathlib, random, re, threading, time, urllib.parse, urllib.request
+import base64, html, http.cookiejar, importlib.util, json, pathlib, random, re, threading, time, urllib.parse, urllib.request
 
 SPEC = {
     "name": "web_search",
@@ -59,7 +59,10 @@ def _real_url(href):
 def _duckduckgo(query, limit):
     data = urllib.parse.urlencode({"q": query, "kl": _cfg("search.region", "tw-tzh")}).encode()
     req = urllib.request.Request("https://html.duckduckgo.com/html/", data=data, headers=HEADERS)
-    page = _open(req)
+    return _duckduckgo_parse(query, _open(req), limit)
+
+
+def _duckduckgo_parse(query, page, limit):
     if "result__a" not in page and re.search(r"anomaly|challenge|bots", page, re.I):
         raise Blocked("DuckDuckGo")                    # 機器人驗證頁，不是真的沒結果
     titles = re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', page, re.S)
@@ -105,11 +108,49 @@ def _bing_url(href):
     return html.unescape(href)
 
 
-def _bing(query, limit):
+def _bing_query_url(query):
     region = _cfg("search.region", "tw-tzh")
     cc = {"tw": "TW", "hk": "HK", "us": "US", "cn": "CN", "jp": "JP"}.get(region.split("-")[0], "")
-    url = "https://www.bing.com/search?" + urllib.parse.urlencode({"q": query, "setlang": "zh-hant" if "tzh" in region else "", "cc": cc})
-    page = _open(urllib.request.Request(url, headers=HEADERS))
+    return "https://www.bing.com/search?" + urllib.parse.urlencode({"q": query, "setlang": "zh-hant" if "tzh" in region else "", "cc": cc})
+
+
+def _bing(query, limit):
+    return _bing_parse(query, _open(urllib.request.Request(_bing_query_url(query), headers=HEADERS)), limit)
+
+
+def _search_browser(query, limit):
+    """用使用者自己的瀏覽器搜尋（設定「用我的瀏覽器讀網頁」打開時）：程式直接發的請求被當成機器人擋掉時，
+    真的瀏覽器通常不會被擋。瀏覽器的部分跟 fetch_url 共用（同一個專用資料夾、只讀取頁面）。
+    先試 DuckDuckGo 的純 HTML 版（幾乎沒有 JavaScript，幾秒就好），再試 Bing；每個都限時，不讓一次搜尋卡很久。"""
+    browser_dom = _fetch_url_module()._browser_dom
+    blocked, errs = [], []
+    ddg = "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query, "kl": _cfg("search.region", "tw-tzh")})
+    for name, url, secs, parse in (("DuckDuckGo", ddg, 20, _duckduckgo_parse), ("Bing", _bing_query_url(query), 25, _bing_parse)):
+        dom, err = browser_dom(url, secs)
+        if err:
+            errs.append(f"{name}：{err}")
+            continue
+        try:
+            got = parse(query, dom, limit)
+        except Blocked:
+            blocked.append(name)
+            continue
+        if got:
+            return got, f"{name}（用你的瀏覽器）"
+    if blocked and not errs:
+        raise Blocked("、".join(blocked))
+    raise RuntimeError("；".join(errs + [f"{b}：也被擋" for b in blocked]) or "沒有結果")
+
+
+def _fetch_url_module():
+    """同一個資料夾裡的 fetch_url（skill 是用檔案路徑載入的，不能直接 import）。"""
+    spec = importlib.util.spec_from_file_location("_aw_fetch_url", pathlib.Path(__file__).with_name("fetch_url.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _bing_parse(query, page, limit):
     out = []
     for it in re.findall(r'<li class="b_algo"[^>]*>(.*?)</li>', page, re.S):
         a = re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', it, re.S)
@@ -149,10 +190,21 @@ def run(query, limit=None):
         time.sleep(random.uniform(8, 12))
         _pace["last"] = time.time()
         results, engine, blocked = _search(query, limit)
+    browser_err = ""
+    if not results and blocked and _cfg("browser.enabled", False):
+        try:
+            results, engine = _search_browser(query, limit)
+        except Blocked:
+            results = []
+        except Exception as e:
+            browser_err = str(e)[:160]
     if not results and blocked:
         # 一定要講清楚是「被擋」，不然模型會把「搜不到」當成「沒有這回事」寫進結論
         return (f"[搜尋被擋] {'、'.join(blocked)} 把這次搜尋當成機器人擋了，這不代表沒有相關資料。"
-                "不要據此下「查無資料」的結論；可以改用已知的網址直接讀，或在報告裡註明搜尋受阻。")
+                "不要據此下「查無資料」的結論；可以改用已知的網址直接讀，或在報告裡註明搜尋受阻。"
+                + (f"（也試了用使用者的瀏覽器搜尋：{browser_err}）" if browser_err
+                   else "" if _cfg("browser.enabled", False) else
+                   "（提示使用者：設定頁打開「用我的瀏覽器讀網頁」後，被擋時會改用使用者自己的瀏覽器搜尋）"))
     if not results:
         return f"搜尋「{query}」沒有結果"
     return "\n".join(f"{i}. {t}\n   {u}\n   {sn}" for i, (t, u, sn) in enumerate(results, 1)) + f"\n（搜尋引擎：{engine}）"

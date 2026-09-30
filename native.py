@@ -31,6 +31,16 @@ class Bridge:
         if _own_page() and str(url).lower().startswith(("http://", "https://")):
             webbrowser.open(url)
 
+    def pick_folder(self):
+        """「＋」選單的「選擇資料夾…」：系統的選資料夾視窗，回傳路徑（取消回傳空字串）。"""
+        if not _own_page():
+            return ""
+        kind = getattr(getattr(webview, "FileDialog", None), "FOLDER", None) or webview.FOLDER_DIALOG
+        res = webview.windows[0].create_file_dialog(kind)
+        if not res:
+            return ""
+        return res if isinstance(res, str) else res[0]
+
     def save_file(self, name, b64):
         if not _own_page():
             return None

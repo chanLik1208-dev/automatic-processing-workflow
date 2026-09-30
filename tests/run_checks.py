@@ -435,6 +435,127 @@ def t_browser_read():
     return "關閉時照實說讀不到；打開後用專用瀏覽器讀到 JavaScript 產生的正文"
 
 
+def t_search_browser_fallback():
+    """兩個搜尋引擎都把程式當機器人擋掉時：打開「用我的瀏覽器讀網頁」就改用瀏覽器搜；沒打開要提示使用者。"""
+    import json as _j, stat as _st
+    if sys.platform == "win32":
+        raise Skip("假的瀏覽器是 shell 腳本")
+    sys.path.insert(0, str(HOME / "skills"))
+    import web_search
+    fake = HOME / "fake-browser"
+    fake.write_text("#!/bin/sh\ncat <<'HTML'\n<html><body><a rel=\"nofollow\" class=\"result__a\" "
+                    "href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Flmstudio.ai%2F\">LM Studio 本機模型</a>"
+                    "<a class=\"result__snippet\" href=\"x\">在自己的電腦上跑本機模型</a></body></html>\nHTML\n")
+    fake.chmod(fake.stat().st_mode | _st.S_IEXEC)
+    conf_path = HOME / "config.json"
+    conf = _j.loads(conf_path.read_text(encoding="utf-8"))
+    saved = (web_search._search, web_search.time.sleep)
+    web_search._search = lambda q, l: ([], "", ["DuckDuckGo", "Bing"])
+    web_search.time.sleep = lambda s: None
+    try:
+        conf.setdefault("browser", {})["enabled"] = False
+        conf.setdefault("export", {})["browser_path"] = str(fake)
+        conf_path.write_text(_j.dumps(conf, ensure_ascii=False), encoding="utf-8")
+        off = web_search.run("LM Studio 本機模型")
+        assert off.startswith("[搜尋被擋]") and "用我的瀏覽器讀網頁" in off, off
+        conf["browser"]["enabled"] = True
+        conf_path.write_text(_j.dumps(conf, ensure_ascii=False), encoding="utf-8")
+        on = web_search.run("LM Studio 本機模型")
+        assert "https://lmstudio.ai/" in on and "用你的瀏覽器" in on, on
+    finally:
+        web_search._search, web_search.time.sleep = saved
+        conf["browser"]["enabled"] = False
+        conf["export"]["browser_path"] = ""
+        conf_path.write_text(_j.dumps(conf, ensure_ascii=False), encoding="utf-8")
+    return "被擋時：關閉會提示打開；打開後改用瀏覽器搜到結果"
+
+
+def t_attach_continue():
+    """附件（資料夾、圖片）、繼續、重新生成：用一個假的 OpenAI 相容伺服器跑完整流程（不需要網路、不需要真的模型）。"""
+    import base64 as _b64, http.server, json as _j, socketserver
+    reqs = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            body = _j.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            reqs.append(body)
+            msgs, tools = body["messages"], [t["function"]["name"] for t in body.get("tools") or []]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            send = lambda d: self.wfile.write(f"data: {_j.dumps(d, ensure_ascii=False)}\n\n".encode())
+            if "read_folder" in tools and not any(m.get("role") == "tool" for m in msgs):
+                send({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "function": {
+                    "name": "read_folder", "arguments": _j.dumps({"path": "note.txt"})}}]}}]})
+            else:
+                send({"choices": [{"delta": {"content": f"答覆{len(reqs)}"}, "finish_reason": "stop"}]})
+            self.wfile.write(b"data: [DONE]\n\n")
+
+    srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    folder = HOME / "att-folder"
+    folder.mkdir(exist_ok=True)
+    (folder / "note.txt").write_text("季度營收上升 12%", encoding="utf-8")
+    (HOME / "outside.txt").write_text("不能讓模型讀到", encoding="utf-8")
+    img = HOME / "pic.png"
+    img.write_bytes(_b64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="))
+    raw = _j.loads((HOME / "config.json").read_text(encoding="utf-8"))
+    raw["providers"]["fakeapi"] = {"label": "假模型", "base_url": f"http://127.0.0.1:{srv.server_address[1]}/v1",
+                                   "api_key": "x", "default_model": "fake"}
+    raw.setdefault("lmstudio_guard", {}).update(nan_watchdog=False, raw_capture=False)
+    (HOME / "config.json").write_text(_j.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    try:
+        engine.save_workflow("att-check", {"title": "附件檢查", "task": "整理附件", "provider": "fakeapi", "skills": [],
+                                           "schedule": {}}, create=True)
+        rid = engine.run_workflow("att-check", "manual", "看一下", attachments={"folder": str(folder), "images": [str(img)]})
+        with engine.db() as c:
+            st, out = c.execute("SELECT status, output FROM runs WHERE id=?", (rid,)).fetchone()
+            tool_out = c.execute("SELECT output FROM steps WHERE run_id=? AND kind='tool'", (rid,)).fetchone()
+        assert st == "success", (st, out)
+        first = reqs[0]["messages"][1]["content"]
+        assert isinstance(first, list) and first[1]["image_url"]["url"].startswith("data:image/png;base64,"), "圖片沒有送給模型"
+        assert "季度營收" in tool_out[0], tool_out                        # read_folder 自動加進工具、讀得到附上的資料夾
+        engine._ctx.folders = [str(folder)]
+        rf = engine.load_skills()["read_folder"]
+        assert "只能讀附上的資料夾" in rf.run("../outside.txt"), "read_folder 讀到資料夾外面了"
+        engine._ctx.folders = []
+        assert "沒有附上資料夾" in rf.run("")
+        # 繼續：沿用整段對話（包含上次的工具結果），接上新的輸入
+        n = len(reqs)
+        assert engine.continue_run(rid, "再短一點")
+        for _ in range(50):
+            if len(reqs) > n and not engine._running:
+                break
+            time.sleep(0.1)
+        msgs = reqs[n]["messages"]
+        assert msgs[-1]["content"].startswith("再短一點") and any(m.get("role") == "tool" for m in msgs), msgs[-1]
+        assert isinstance(msgs[1]["content"], list), "繼續時，前面附過的圖片模型要還看得到"
+        assert not any(k.startswith("_") for m in msgs for k in m), "送給 API 的訊息不能帶內部欄位"
+        assert "read_folder" in [t["function"]["name"] for t in reqs[n].get("tools") or []], "繼續時要沿用上次附的資料夾"
+        # 重新生成第一次：同樣的輸入和附件
+        n = len(reqs)
+        assert engine.regenerate_run(rid)
+        for _ in range(50):
+            if len(reqs) > n and not engine._running:
+                break
+            time.sleep(0.1)
+        again = reqs[n]["messages"][1]["content"]
+        assert isinstance(again, list) and "看一下" in again[0]["text"], again
+        for bad in ({"folder": str(HOME / "nope")}, {"images": [str(folder / "note.txt")]}):
+            try:
+                engine.check_attachments(bad)
+                raise AssertionError(f"沒有擋下 {bad}")
+            except ValueError:
+                pass
+    finally:
+        srv.shutdown()
+        engine._ctx.folders = []
+    return "圖片送到模型、資料夾只讀得到裡面、繼續沿用對話、重新生成照原本的輸入和附件"
+
+
 def t_update():
     import updater
     assert updater._ver("0.10.0") > updater._ver("0.9.9") > updater._ver("0.2.1"), "版本比較錯誤"
@@ -558,6 +679,8 @@ def main():
     check("搜尋間隔 / 官方搜尋預設關閉", t_search_pacing)
     check("Gemini 訂閱（agy）", t_gemini_agy)
     check("用我的瀏覽器讀網頁", t_browser_read)
+    check("搜尋被擋改用瀏覽器", t_search_browser_fallback)
+    check("附件 / 繼續 / 重新生成", t_attach_continue)
     check("搜尋", t_search, skip=net)
     check("匯出 Word / PDF", t_export)
     check("檢查更新", t_update, skip=net)

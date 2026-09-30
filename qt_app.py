@@ -6,6 +6,7 @@ import base64
 import datetime
 import json
 import math
+import os
 import re
 import sys
 import time
@@ -422,6 +423,114 @@ class DepthMenuButton(QToolButton):
             b.setStyleSheet("border:none;padding:2px 4px;font-size:12.5px;" + (on if lv == v else f"color:{C('muted')}"))
 
 
+class PromptEdit(QPlainTextEdit):
+    """可以換行的輸入框：Enter 換行，Ctrl/⌘+Enter 送出；打多了自動長高（最多約 6 行）。"""
+
+    def __init__(self, placeholder, on_submit, max_lines=6):
+        super().__init__()
+        self.on_submit, self.max_lines = on_submit, max_lines
+        self.setPlaceholderText(placeholder)
+        self.setToolTip("Enter 換行；Ctrl/⌘+Enter 直接送出")
+        self.setTabChangesFocus(True)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)   # 在上限以內自動長高，不需要捲軸；超過才出現
+        self.document().contentsChanged.connect(self._fit)
+        self._fit()
+
+    def text(self):
+        return self.toPlainText()
+
+    def keyPressEvent(self, ev):
+        if ev.key() in (Qt.Key_Return, Qt.Key_Enter) and ev.modifiers() & (Qt.ControlModifier | Qt.MetaModifier):
+            self.on_submit()
+            return
+        super().keyPressEvent(ev)
+
+    def _fit(self):
+        need = max(1, int(self.document().size().height()))
+        lines = min(self.max_lines, need)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded if need > self.max_lines else Qt.ScrollBarAlwaysOff)
+        self.setFixedHeight(self.fontMetrics().lineSpacing() * lines + 18)
+
+
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+
+
+class AttachMenuButton(QToolButton):
+    """執行列的「＋ 附件」二級選單：資料夾和圖片各自獨立，只套用在下一次執行（或「繼續」）。"""
+
+    def __init__(self, tab):
+        super().__init__()
+        self.tab = tab
+        self.setPopupMode(QToolButton.InstantPopup)
+        self.setToolTip("附上資料夾或圖片（只套用在下一次執行）")
+        self.setMenu(QMenu(self))
+        self.menu().aboutToShow.connect(self._build)
+        self.refresh()
+
+    def att(self):
+        return self.tab.run_att.setdefault(self.tab.sel_wf, {"folder": "", "images": []})
+
+    def refresh(self):
+        a = self.tab.run_att.get(self.tab.sel_wf) or {"folder": "", "images": []}
+        n = (1 if a["folder"] else 0) + len(a["images"])
+        self.setText(f"＋ 附件（{n}）" if n else "＋ 附件")
+
+    def _build(self):
+        m, a = self.menu(), self.att()
+        m.clear()
+        m.addSection("資料夾")
+        if a["folder"]:
+            m.addAction(a["folder"]).setEnabled(False)
+        m.addAction("選擇資料夾…", self.pick_folder)
+        if a["folder"]:
+            m.addAction("清除資料夾", lambda: self._set("folder", ""))
+        hint = m.addAction("模型可以列出、讀取這個資料夾裡的檔案（只能讀、只限這次執行）")
+        hint.setEnabled(False)
+        m.addSection("圖片")
+        for pth in a["images"]:
+            m.addAction(os.path.basename(pth)).setEnabled(False)
+        m.addAction("加入圖片…", self.pick_images)
+        if a["images"]:
+            m.addAction("全部移除", lambda: self._set("images", []))
+        hint2 = m.addAction("跟輸入一起給模型看（最多 8 張、每張 10 MB）；Gemini 訂閱目前不能附圖片")
+        hint2.setEnabled(False)
+
+    def _set(self, key, val):
+        self.att()[key] = val
+        self.refresh()
+
+    def pick_folder(self):
+        d = QFileDialog.getExistingDirectory(self, "選擇要附上的資料夾", self.att()["folder"] or os.path.expanduser("~"))
+        if d:
+            self._set("folder", d)
+
+    def pick_images(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "加入圖片", os.path.expanduser("~"), "圖片 (*.png *.jpg *.jpeg *.webp *.gif)")
+        a = self.att()
+        for f in files:
+            if len(a["images"]) >= 8:
+                self.tab.win.toast("一次最多附 8 張圖片")
+                break
+            if os.path.getsize(f) > 10 * 1024 * 1024:
+                self.tab.win.toast(f"{os.path.basename(f)} 太大了（每張最多 10 MB）")
+                continue
+            if f.lower().endswith(IMAGE_EXTS) and f not in a["images"]:
+                a["images"].append(f)
+        self.refresh()
+
+    def body(self):
+        """送給伺服器的附件（圖片讀成 base64，跟網頁版同一個格式）。"""
+        a = self.tab.run_att.get(self.tab.sel_wf) or {"folder": "", "images": []}
+        imgs = []
+        for f in a["images"]:
+            try:
+                with open(f, "rb") as fh:
+                    imgs.append({"name": os.path.basename(f), "data": base64.b64encode(fh.read()).decode()})
+            except OSError:
+                pass
+        return {"folder": a["folder"], "images": imgs}
+
+
 class ModelMenuButton(QToolButton):
     """執行列上的「模型 ▾」：這次要用哪個模型（不選就照工作流的設定），只套用在下一次執行。
     選項在打開選單時才建，模型狀態有變（例如 LM Studio 載入了新模型）也會跟著更新。"""
@@ -612,7 +721,9 @@ class WorkflowTab(QWidget):
         # 工具列
         bar = QFrame()
         bar.setObjectName("panel")
-        h = QHBoxLayout(bar)
+        bv = QVBoxLayout(bar)                                 # 上面一行放選單和按鈕，輸入框自己一整行在下面
+        h = QHBoxLayout()
+        bv.addLayout(h)
         self.combo = QComboBox()
         self.combo.setObjectName("picker")
         self.combo.setMinimumWidth(220)
@@ -622,10 +733,9 @@ class WorkflowTab(QWidget):
         self.info.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.enable = QCheckBox("排程")
         self.enable.toggled.connect(self.on_enable)
-        self.inp = QLineEdit()
-        self.inp.setPlaceholderText("要處理什麼？")
-        self.inp.setMinimumWidth(200)
-        self.inp.returnPressed.connect(self.on_run)
+        self.inp = PromptEdit("要處理什麼？（Enter 換行，Ctrl/⌘+Enter 執行）", self.on_run, max_lines=8)
+        self.run_att = {}                                     # 附件（資料夾、圖片）：只算下一次執行
+        self.attach_btn = AttachMenuButton(self)
         self.run_btn = QPushButton("立即執行")
         self.run_btn.setDefault(True)
         self.run_btn.clicked.connect(self.on_run)
@@ -642,8 +752,9 @@ class WorkflowTab(QWidget):
         self.run_model = {}                                   # 臨時換的模型 (來源, 模型)：只算下一次執行
         self.model_btn = ModelMenuButton(self)
         self.run_depth = {}                                   # 臨時調的深度：只算下一次執行
-        for w in (self.combo, self.info, self.enable, self.inp, self.model_btn, self.depth, self.run_btn, self.more):
+        for w in (self.combo, self.info, self.enable, self.attach_btn, self.model_btn, self.depth, self.run_btn, self.more):
             h.addWidget(w)
+        bv.addWidget(self.inp)
         v.addWidget(bar)
 
         # 現在
@@ -732,7 +843,28 @@ class WorkflowTab(QWidget):
         self.view.document().setDocumentMargin(16)
         self.view.setOpenLinks(False)
         self.view.anchorClicked.connect(self.on_link)
-        rv.addWidget(self.view)
+        rv.addWidget(self.view, 1)                            # 多出來的高度都給報告，下面「接著做」只佔需要的高度
+        # 接著做：跑完的紀錄可以「繼續」（保留整段對話、加新的輸入）或「重新生成」
+        self.cont = QFrame()
+        cv = QVBoxLayout(self.cont)
+        cv.setContentsMargins(0, 6, 0, 0)
+        self.cont_in = PromptEdit("接著問、要求修改或補充…（保留上面的整段對話；Ctrl/⌘+Enter 送出）", self.on_continue, max_lines=5)
+        self.cont_note = label("", "muted")
+        crow = QHBoxLayout()
+        self.cont_btn = QPushButton("繼續")
+        self.cont_btn.clicked.connect(self.on_continue)
+        self.regen_btn = QPushButton("重新生成")
+        self.regen_btn.clicked.connect(self.on_regenerate)
+        crow.addWidget(self.cont_btn)
+        crow.addWidget(self.regen_btn)
+        crow.addWidget(label("附件、模型用上方執行列的「＋ 附件」「模型」。", "muted", wrap=False))
+        crow.addStretch()
+        cv.addWidget(self.cont_in)
+        cv.addWidget(self.cont_note)
+        cv.addLayout(crow)
+        self.cont.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self.cont.hide()
+        rv.addWidget(self.cont)
         split.addWidget(left)
         split.addWidget(right)
         split.setSizes([380, 900])
@@ -770,6 +902,9 @@ class WorkflowTab(QWidget):
         self.run_btn.setVisible(w is not None)
         self.depth.setVisible(w is not None and not w.get("running"))
         self.model_btn.setVisible(w is not None and not w.get("running"))
+        self.attach_btn.setVisible(w is not None and not w.get("running"))
+        if not self.attach_btn.menu().isVisible():
+            self.attach_btn.refresh()                         # 換了工作流：顯示那條工作流自己的附件數
         if w and not self.model_btn.menu().isVisible():
             self.model_btn.refresh()
         if w and not self.depth.menu().isVisible():
@@ -843,7 +978,13 @@ class WorkflowTab(QWidget):
                  f"<span style='color:{C(st[1])};font-size:15px'>{st[0]}</span></h2>",
                  f"<p style='color:{C('muted')}'>{when(r['started'])}{TRIGGER.get(r['trigger'], '手動')}開始{took}，"
                  f"使用 {esc(self.win.model_name(r['model'], r['provider']))}"
-                 + (f"，篇幅「{DEPTH_LEVELS[r['depth']][0]}」" if r.get("depth") in DEPTH_LEVELS and r["depth"] != 3 else "") + "</p>"]
+                 + (f"，篇幅「{DEPTH_LEVELS[r['depth']][0]}」" if r.get("depth") in DEPTH_LEVELS and r["depth"] != 3 else "")
+                 + (f"，接續 #{r['parent']}" if r.get("parent") else "") + "</p>"]
+        att = r.get("attachments") or {}
+        att_line = "；".join(x for x in (f"資料夾 {esc(att['folder'])}" if att.get("folder") else "",
+                                         f"圖片 {'、'.join(esc(i) for i in att.get('images') or [])}" if att.get("images") else "") if x)
+        if att_line:
+            parts.append(f"<p style='color:{C('muted')}'>附件：{att_line}</p>")
         if r["status"] == "running":
             parts.append(f"<p style='color:{C('run')}'>還在跑，看上面「現在」那一區</p>")
         if r["output"]:
@@ -868,6 +1009,15 @@ class WorkflowTab(QWidget):
             self.view.verticalScrollBar().setValue(scroll)
         self.export_btn.setEnabled(r["status"] != "running")
         self.del_btn.setEnabled(r["status"] != "running")
+        done = r["status"] != "running" and not str(r["workflow"]).startswith("skill:")   # skill 試用沒有工作流可以接續或重跑
+        self.cont.setVisible(done)
+        can = bool(r.get("can_continue"))
+        self.cont_in.setVisible(can)
+        self.cont_btn.setVisible(can)
+        self.cont_btn.setEnabled(True)
+        self.regen_btn.setEnabled(True)
+        self.cont_note.setText("" if can else "這筆是舊版跑的，沒有保存對話內容，不能接著繼續；可以重新生成。")
+        self.cont_note.setVisible(not can)
         if same:
             apply()
         elif self.shown_detail is None:
@@ -998,7 +1148,9 @@ class WorkflowTab(QWidget):
         text = self.inp.text()
         self.inp.clear()
         depth = self.run_depth.pop(self.sel_wf, None) or self.depth.value()
-        body = {"input": text, "depth": depth}
+        body = {"input": text, "depth": depth, **self.attach_btn.body()}
+        self.run_att.pop(self.sel_wf, None)                  # 附件只算這一次
+        self.attach_btn.refresh()
         pm = self.run_model.pop(self.sel_wf, None)           # 臨時換的模型只算這一次
         if pm:
             body.update(provider=pm[0], model=pm[1])
@@ -1010,6 +1162,48 @@ class WorkflowTab(QWidget):
                 return
             self._after_run()
         self.b.post(f"/api/workflows/{self.sel_wf}/run", body, done)
+
+    def on_continue(self):
+        r = (self.detail or {}).get("run") or {}
+        text = self.cont_in.text().strip()
+        if not r.get("id") or not r.get("can_continue"):
+            return
+        if not text and not (self.run_att.get(self.sel_wf) or {}).get("folder") and not (self.run_att.get(self.sel_wf) or {}).get("images"):
+            self.win.toast("先在框裡寫下要接著做什麼")
+            self.cont_in.setFocus()
+            return
+        body = {"input": text, **self.attach_btn.body()}
+        pm = self.run_model.pop(self.sel_wf, None)
+        if pm:
+            body.update(provider=pm[0], model=pm[1])
+        self.cont_btn.setEnabled(False)
+
+        def done(res):
+            if res and res.get("error"):
+                QMessageBox.warning(self, "沒有開始", res["error"])
+                self.cont_btn.setEnabled(True)
+                return
+            self.cont_in.clear()
+            self.run_att.pop(self.sel_wf, None)
+            self.attach_btn.refresh()
+            self.win.toast("已接著繼續，看上面「現在」那一區")
+            self._after_run()
+        self.b.post(f"/api/runs/{r['id']}/continue", body, done)
+
+    def on_regenerate(self):
+        r = (self.detail or {}).get("run") or {}
+        if not r.get("id"):
+            return
+        self.regen_btn.setEnabled(False)
+
+        def done(res):
+            if res and res.get("error"):
+                QMessageBox.warning(self, "沒有開始", res["error"])
+                self.regen_btn.setEnabled(True)
+                return
+            self.win.toast("已重新生成，看上面「現在」那一區")
+            self._after_run()
+        self.b.post(f"/api/runs/{r['id']}/regenerate", {}, done)
 
     def _after_run(self):
         self.sel_run = None
@@ -1264,7 +1458,9 @@ class SkillsTab(QWidget):
         v.setContentsMargins(0, 8, 0, 0)
         bar = QFrame()
         bar.setObjectName("panel")
-        h = QHBoxLayout(bar)
+        bv = QVBoxLayout(bar)                                 # 上面一行放選單和按鈕，輸入框自己一整行在下面
+        h = QHBoxLayout()
+        bv.addLayout(h)
         imp = QToolButton()
         imp.setText("匯入 skill")
         imp.setPopupMode(QToolButton.InstantPopup)
