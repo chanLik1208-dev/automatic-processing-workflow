@@ -132,7 +132,21 @@ textarea { width: 100%; resize: vertical; line-height: 1.6; }
                      background: var(--panel); transition: transform var(--d-micro) var(--e-micro); box-shadow: 0 1px 2px rgba(0,0,0,.25); }
 .switch input:checked + .tr { background: var(--ok); }
 .switch input:checked + .tr::after { transform: translateX(14px); }
-.bar .runin { width: 220px; }
+.bar .runin { width: 260px; }
+/* 輸入框可以換行（Enter 換行、Ctrl/⌘+Enter 直接執行），打多了自動長高 */
+textarea.runin { resize: none; min-height: 36px; max-height: 160px; line-height: 1.45; padding: 7px 10px; overflow-y: auto; vertical-align: middle; display: block; }
+.attach-btn .n { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 9px; background: var(--accent); color: var(--accent-ink); font-size: 12px; font-weight: 600; }
+.att-pop { padding: 8px 10px 10px; display: grid; gap: 8px; }
+.att-pop .ah { font-weight: 600; font-size: 13.5px; }
+.att-pop .hint { color: var(--muted); font-size: 12.5px; }
+.att-pop .row2 input[type=text] { min-width: 0; }
+.att-imgs { display: flex; flex-wrap: wrap; gap: 6px; }
+.att-imgs figure { position: relative; margin: 0; width: 64px; height: 64px; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); }
+.att-imgs img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.att-imgs button { position: absolute; top: 2px; right: 2px; padding: 0 6px; font-size: 12px; line-height: 18px; border-radius: 9px; background: rgba(0,0,0,.6); color: #fff; }
+.cont { display: grid; gap: 8px; }
+.cont textarea { min-height: 70px; resize: vertical; }
+.cont .row2 { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .depth { display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--soft); white-space: nowrap; }
 .depth input[type=range] { width: 110px; accent-color: var(--run); margin: 0; cursor: pointer; }
 .depth b { color: var(--ink); font-weight: 600; min-width: 2.2em; }
@@ -706,14 +720,16 @@ function renderBar() {
   if (w.next_due && w.enabled && !manual) bits.push(`下次 ${when(w.next_due)}`);
   $("#wf-info").innerHTML = `<div class="d">${esc(w.description)}</div><div class="muted">${bits.join(" · ")} · ${esc(modelName(w.model, w.provider))}</div>`;
 
-  const keep = document.querySelector("#wf-actions input.runin")?.value || "";
+  const keep = document.querySelector("#wf-actions .runin")?.value || "";
   $("#wf-actions").innerHTML =
     (manual ? "" : `<label class="switch" title="開關排程"><input type="checkbox" data-enable ${w.enabled ? "checked" : ""}><span class="tr"></span>排程</label>`) +
-    (manual ? `<input type="text" class="runin" placeholder="要處理什麼？" value="${esc(keep)}">` : "") +
-    (w.running ? "" : modelMenu(w) + depthMenu(runDepth[selWf] ?? w.depth ?? 3)) +
+    (manual ? `<textarea class="runin" rows="1" placeholder="要處理什麼？" title="Enter 換行；Ctrl/⌘+Enter 直接執行">${esc(keep)}</textarea>` : "") +
+    (w.running ? "" : attachMenu() + modelMenu(w) + depthMenu(runDepth[selWf] ?? w.depth ?? 3)) +
     (w.running ? `<button class="ghost" data-stop style="color:var(--bad)">停止</button>` : `<button data-run>立即執行</button>`);
   $("#more-menu").innerHTML = `<span class="plain" data-act="edit">編輯設定</span><span class="plain" data-act="new">＋ 新增工作流</span>
     <div class="sep"></div><span class="plain danger" data-act="delete">刪除這條工作流</span>`;
+  const ta = document.querySelector("#wf-actions .runin");
+  if (ta) growRunin(ta);
 }
 
 function depthInfo(v) { return DEPTH.find(d => d.level === +v) || {label: "high", hint: ""}; }
@@ -740,6 +756,63 @@ function modelMenu(w) {
   return `<div class="dd"><button class="ghost model-btn ${cur ? "on" : ""}" data-toggle="model-pick" title="這次要用哪個模型（只套用在下一次執行）">模型 <b>${esc(label)}</b> ▾</button>
     <div class="menu right" id="model-pick">${items}<div class="sep"></div><span class="plain" style="pointer-events:none;color:var(--muted);font-size:12px">只套用在下一次執行；工作流本身的設定不會改</span></div></div>`;
 }
+
+// 執行列：「＋ 附件」二級選單。資料夾和圖片是兩件獨立的事，各自可以有、可以沒有；只套用在下一次執行（或「繼續」）
+const ATT = {};                                            // 每條工作流各自的附件：{folder, images: [{name, data, url}]}
+const att = () => (ATT[selWf] ??= {folder: "", images: []});
+const attCount = a => (a.folder ? 1 : 0) + a.images.length;
+function attachMenu() {
+  const a = att(), n = attCount(a);
+  const pick = window.__NATIVE__ && window.pywebview?.api?.pick_folder;
+  return `<div class="dd"><button class="ghost attach-btn" data-toggle="attach-menu" title="附上資料夾或圖片（只套用在下一次執行）">＋ 附件${n ? `<span class="n">${n}</span>` : ""}</button>
+    <div class="menu right" id="attach-menu" style="min-width:340px"><div class="att-pop">
+      <div class="ah">資料夾</div>
+      <div class="row2"><input type="text" id="att-folder" placeholder="資料夾路徑，例如 ~/Documents/報告" value="${esc(a.folder)}">
+        ${pick ? `<button class="ghost" data-att-pick>選擇…</button>` : ""}${a.folder ? `<button class="ghost" data-att-clear="folder">清除</button>` : ""}</div>
+      <div class="hint">模型可以列出、讀取這個資料夾裡的檔案（只能讀、只限這次執行）。</div>
+      <div class="sep"></div>
+      <div class="ah">圖片</div>
+      ${a.images.length ? `<div class="att-imgs">${a.images.map((im, i) =>
+        `<figure title="${esc(im.name)}"><img src="${im.url}" alt="${esc(im.name)}"><button data-att-rm="${i}" aria-label="移除">×</button></figure>`).join("")}</div>` : ""}
+      <div class="row2"><label class="btn ghost" style="cursor:pointer">加入圖片…<input type="file" id="att-img" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden></label>
+        ${a.images.length ? `<button class="ghost" data-att-clear="images">全部移除</button>` : ""}</div>
+      <div class="hint">跟輸入一起給模型看（最多 8 張、每張 10 MB）。Gemini 訂閱目前不能附圖片。</div>
+    </div></div></div>`;
+}
+function attachBody() {
+  const a = att();
+  return {folder: a.folder.trim(), images: a.images.map(im => ({name: im.name, data: im.data}))};
+}
+function refreshAttachMenu() {                            // 選單開著時只換裡面的內容，不整列重畫（不然選單會被關掉）
+  const menu = $("#attach-menu");
+  if (!menu) return;
+  const tmp = document.createElement("div"); tmp.innerHTML = attachMenu();
+  menu.innerHTML = tmp.querySelector("#attach-menu").innerHTML;
+  const n = attCount(att()), btn = document.querySelector(".attach-btn");
+  if (btn) btn.innerHTML = `＋ 附件${n ? `<span class="n">${n}</span>` : ""}`;
+}
+function growRunin(t) { t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight + 2, 160) + "px"; }
+document.addEventListener("input", e => {
+  if (e.target.matches?.("textarea.runin, .cont textarea")) growRunin(e.target);
+  if (e.target.id === "att-folder") { att().folder = e.target.value; const b = document.querySelector(".attach-btn"), n = attCount(att());
+    if (b) b.innerHTML = `＋ 附件${n ? `<span class="n">${n}</span>` : ""}`; }
+});
+document.addEventListener("keydown", e => {                // Ctrl/⌘+Enter：直接執行（單按 Enter 是換行）
+  if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey)) return;
+  if (e.target.matches?.("textarea.runin")) { e.preventDefault(); document.querySelector("[data-run]")?.click(); }
+  else if (e.target.matches?.(".cont textarea")) { e.preventDefault(); document.querySelector("[data-cont]")?.click(); }
+});
+document.addEventListener("change", async e => {
+  if (e.target.id !== "att-img") return;
+  const a = att();
+  for (const f of [...e.target.files]) {
+    if (a.images.length >= 8) { toast("一次最多附 8 張圖片"); break; }
+    if (f.size > 10 * 1024 * 1024) { toast(`${f.name} 太大了（每張最多 10 MB）`); continue; }
+    const url = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(f); });
+    a.images.push({name: f.name, data: String(url).split(",")[1], url});
+  }
+  refreshAttachMenu();
+});
 
 // 執行列：獨立的二級選單，按鈕只顯示目前等級，滑桿在選單裡
 function depthMenu(v) {
@@ -1036,6 +1109,7 @@ async function loadDetail() {
   if (want !== selRun) return;
   DETAIL = d;
   if (menuOpen["export-menu"]) return;                        // 選單開著時不要重畫，免得它被關掉
+  if (want === shownRun && document.activeElement?.matches?.(".cont textarea")) return;   // 正在打「繼續」的內容：先不重畫
   if (!changed("detail", [d, Math.floor(Date.now() / 60000)])) return;
   const swap = shownRun !== null && shownRun !== want, first = shownRun === null;
   const el = $("#detail"), token = ++swapToken;
@@ -1055,6 +1129,15 @@ async function loadDetail() {
 function renderDetail(d) {
   const r = d.run, st = STATUS[r.status];
   const took = r.finished ? `，花了 ${dur(r.finished - r.started)}` : "";
+  const keepCont = document.querySelector(".cont textarea")?.value || "";
+  const a = r.attachments || {};
+  const attLine = [a.folder ? `資料夾 ${esc(a.folder)}` : "", a.images?.length ? `圖片 ${a.images.map(esc).join("、")}` : ""].filter(Boolean).join("；");
+  const done = r.status !== "running";
+  const contBox = !done ? "" : `<div class="section">接著做</div><div class="cont">
+      ${r.can_continue ? `<textarea placeholder="接著問、要求修改或補充…（保留上面的整段對話；Ctrl/⌘+Enter 送出）">${esc(keepCont)}</textarea>` :
+        `<div class="muted">這筆是舊版跑的，沒有保存對話內容，不能接著繼續；可以重新生成。</div>`}
+      <div class="row2">${r.can_continue ? `<button data-cont="${r.id}">繼續</button>` : ""}<button class="ghost" data-regen="${r.id}">重新生成</button>
+        <span class="muted" style="font-size:12.5px">附件、模型用上方執行列的「＋ 附件」「模型」。</span></div></div>`;
   $("#detail").innerHTML = `
     <div class="dhead"><p class="t">${esc(wfTitle(r.workflow))} <span class="${st[1]}-text" style="font-size:15px">${st[0]}</span></p>
       ${r.status === "running" ? "" : `<div style="display:flex;gap:8px"><button class="ghost" data-run-del="${r.id}" style="color:var(--bad)">刪除</button><div class="dd"><button class="ghost" data-toggle="export-menu">匯出 ▾</button>
@@ -1068,11 +1151,13 @@ function renderDetail(d) {
           <div class="sep"></div>
           <label class="plain"><input type="checkbox" id="export-steps" ${exportSteps ? "checked" : ""}>附上執行過程</label>
         </div></div></div>`}</div>
-    <div class="m">${when(r.started)}${{schedule: "排程", cli: "從命令列"}[r.trigger] || "手動"}開始${took}，使用 ${esc(modelName(r.model, r.provider))}${r.depth && r.depth !== 3 ? `，篇幅「${esc(depthInfo(r.depth).label)}」` : ""}</div>
+    <div class="m">${when(r.started)}${{schedule: "排程", cli: "從命令列"}[r.trigger] || "手動"}開始${took}，使用 ${esc(modelName(r.model, r.provider))}${r.depth && r.depth !== 3 ? `，篇幅「${esc(depthInfo(r.depth).label)}」` : ""}${r.parent ? `，接續 #${r.parent}` : ""}</div>
+    ${attLine ? `<div class="m">附件：${attLine}</div>` : ""}
     ${r.status === "running" ? `<div class="section">結果</div><div class="run-text">還在跑，看上面「現在」那一區</div>` : ""}
     ${r.output ? `<div class="section">結果</div><div class="result">${md(r.output)}</div>` : ""}
     ${r.status === "cancelled" ? `<div class="section">結果</div><div class="muted">你在這裡停止了執行，沒有產出結果。</div>` : ""}
     ${r.error && r.status !== "cancelled" ? `<div class="section">哪裡出錯</div><div class="errbox">${esc(humanError(r.error))}</div>` : ""}
+    ${contBox}
     ${r.status === "interrupted" ? `<div class="section">哪裡出錯</div><div class="errbox">執行到一半伺服器被重新啟動，這次沒有跑完。</div>` : ""}
     <div class="section">過程</div>${timeline(d.steps)}
     <details class="raw"><summary>技術細節</summary>
@@ -1405,10 +1490,35 @@ document.addEventListener("click", async e => {
     b.disabled = true;
     const [provider, model] = (runModel[selWf] || "|").split("|");
     const res = await post(`/api/workflows/${encodeURIComponent(selWf)}/run`,
-      {input: inp?.value || "", depth: runDepth[selWf] ?? WF[selWf]?.depth ?? 3, ...(provider ? {provider, model} : {})});
+      {input: inp?.value || "", depth: runDepth[selWf] ?? WF[selWf]?.depth ?? 3, ...(provider ? {provider, model} : {}), ...attachBody()});
     if (res.error) { toast(res.error); b.disabled = false; return; }
-    delete runDepth[selWf]; delete runModel[selWf];           // 臨時調的只算這一次，下次回到工作流的設定
-    if (inp) inp.value = "";
+    delete runDepth[selWf]; delete runModel[selWf]; delete ATT[selWf];   // 臨時調的只算這一次，下次回到工作流的設定
+    if (inp) { inp.value = ""; growRunin(inp); inp.blur(); }  // 離開輸入框：執行列才會重畫（按鈕、附件數字回到最新）
+    setTimeout(async () => { selRun = (await j("/api/runs?workflow=" + encodeURIComponent(selWf)))[0]?.id; lastSig = {}; tick(); }, 400);
+    return;
+  }
+  if (e.target.closest("[data-att-pick]")) {
+    const path = await window.pywebview.api.pick_folder();
+    if (path) { att().folder = path; refreshAttachMenu(); }
+    return;
+  }
+  const ac = e.target.closest("[data-att-clear]");
+  if (ac) { if (ac.dataset.attClear === "folder") att().folder = ""; else att().images = []; refreshAttachMenu(); return; }
+  const ar = e.target.closest("[data-att-rm]");
+  if (ar) { att().images.splice(+ar.dataset.attRm, 1); refreshAttachMenu(); return; }
+  const cb = e.target.closest("[data-cont], [data-regen]");
+  if (cb) {
+    // 繼續：接著這筆紀錄的整段對話，用下面框裡的新輸入；重新生成：同樣的輸入和設定再跑一次
+    const id = cb.dataset.cont || cb.dataset.regen, cont = !!cb.dataset.cont;
+    const box = document.querySelector(".cont textarea");
+    if (cont && !box?.value.trim() && !attCount(att())) { toast("先在框裡寫下要接著做什麼"); box?.focus(); return; }
+    cb.disabled = true;
+    const [provider, model] = (runModel[selWf] || "|").split("|");
+    const res = await post(`/api/runs/${id}/${cont ? "continue" : "regenerate"}`,
+      cont ? {input: box.value, ...(provider ? {provider, model} : {}), ...attachBody()} : {});
+    if (res.error) { toast(res.error); cb.disabled = false; return; }
+    if (cont) { delete ATT[selWf]; delete runModel[selWf]; box.value = ""; box.blur(); lastSig.bar = null; }
+    toast(cont ? "已接著繼續，看上面「現在」那一區" : "已重新生成，看上面「現在」那一區");
     setTimeout(async () => { selRun = (await j("/api/runs?workflow=" + encodeURIComponent(selWf)))[0]?.id; lastSig = {}; tick(); }, 400);
     return;
   }

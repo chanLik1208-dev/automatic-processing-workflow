@@ -43,6 +43,35 @@ def workflows_view():
     return out
 
 
+MAX_IMAGES, MAX_IMAGE_BYTES = 8, 10 * 1024 * 1024
+
+
+def save_attachments(body):
+    """介面送來的附件 → 引擎要的格式。圖片是 base64，存進資料夾的 uploads/（之後重新生成還用得到）。"""
+    att = {"folder": str(body.get("folder") or "").strip(), "images": []}
+    imgs = body.get("images") or []
+    if len(imgs) > MAX_IMAGES:
+        raise ValueError(f"一次最多附 {MAX_IMAGES} 張圖片")
+    if imgs:
+        d = engine.ROOT / "uploads" / time.strftime("%Y%m%d-%H%M%S")
+        d.mkdir(parents=True, exist_ok=True)
+        for i, im in enumerate(imgs):
+            name = pathlib.Path(str(im.get("name") or f"image{i}.png")).name
+            ext = pathlib.Path(name).suffix.lower()
+            if ext not in engine.IMAGE_TYPES:
+                raise ValueError(f"不支援的圖片格式：{name}（可以用 png、jpg、webp、gif）")
+            try:
+                data = base64.b64decode(str(im.get("data") or "").split(",", 1)[-1], validate=True)
+            except ValueError:
+                raise ValueError(f"圖片資料壞掉了：{name}")
+            if len(data) > MAX_IMAGE_BYTES:
+                raise ValueError(f"圖片太大：{name}（每張最多 10 MB）")
+            f = d / f"{i + 1:02d}-{name}"
+            f.write_bytes(data)
+            att["images"].append(str(f))
+    return att
+
+
 def find_browser():
     """PDF 要靠 Chromium 系的瀏覽器印；設定裡有指定就用指定的，否則 Windows 用 Edge，macOS / Linux 找常見的幾個。"""
     custom = engine.cfg("export.browser_path", "")
@@ -173,12 +202,34 @@ class Api:
                 steps = c.execute("SELECT * FROM steps WHERE run_id=? ORDER BY idx, id", (rid,)).fetchall()
             if not run:
                 return self.send({"error": "not found"}, 404)
-            return self.send({"run": dict(run), "steps": [dict(s) for s in steps]})
+            run = dict(run)
+            # 完整對話可能很大，不傳給介面；只告訴它能不能「繼續」，附件和接續關係另外整理
+            run["can_continue"] = bool(run.pop("messages", None))
+            try:
+                params = json.loads(run.pop("params", None) or "{}")
+            except ValueError:
+                params = {}
+            att = params.get("attachments") or {}
+            run["attachments"] = {"folder": att.get("folder") or "", "images": [os.path.basename(x) for x in att.get("images") or []]}
+            run["parent"] = params.get("parent")
+            return self.send({"run": run, "steps": [dict(s) for s in steps]})
         self.send({"error": "not found"}, 404)
 
     def route_post(self, raw_path, body):
         u = urlparse(raw_path)
         parts = u.path.strip("/").split("/")
+        if len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] in ("continue", "regenerate"):
+            if not parts[2].isdigit():
+                return self.send({"error": "紀錄編號不對"}, 400)
+            try:
+                if parts[3] == "continue":
+                    ok = engine.continue_run(int(parts[2]), body.get("input", ""), save_attachments(body),
+                                             body.get("provider"), body.get("model"), body.get("depth"))
+                else:
+                    ok = engine.regenerate_run(int(parts[2]))
+            except ValueError as e:
+                return self.send({"error": str(e)}, 400)
+            return self.send({"started": ok} if ok else {"error": "這條工作流正在執行，等它跑完再試"}, 200 if ok else 409)
         if len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "delete":
             if not parts[2].isdigit():
                 return self.send({"error": "紀錄編號不對"}, 400)
@@ -258,7 +309,8 @@ class Api:
             action = parts[3] if len(parts) == 4 else ""
             if action == "run":
                 wf = engine.with_model(name, body.get("provider"), body.get("model"))   # 這次臨時換模型（可省略）
-                return self.send({"started": engine.start_async(name, "manual", body.get("input", ""), wf, depth=body.get("depth"))})
+                return self.send({"started": engine.start_async(name, "manual", body.get("input", ""), wf, depth=body.get("depth"),
+                                                                attachments=save_attachments(body))})
             if action == "stop":
                 return self.send({"ok": engine.cancel(name)})
             if action == "save":
