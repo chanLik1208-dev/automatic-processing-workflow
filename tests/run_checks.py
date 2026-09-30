@@ -333,6 +333,26 @@ def t_search():
     return "有結果（" + r.rsplit("搜尋引擎：", 1)[-1].rstrip("）") + "）"
 
 
+def t_search_pacing():
+    """自己的搜尋要跟上一次保持間隔（連續秒搜是被擋的主因）；GPT 官方搜尋預設關閉（帶 AI 身分，會被差別對待）。"""
+    import time as _t
+    sys.path.insert(0, str(HOME / "skills"))
+    import web_search
+    assert engine.cfg("search.native", False) is False, "OpenAI 官方搜尋必須預設關閉"
+    old = web_search.GAP
+    web_search.GAP = (0.3, 0.3)
+    try:
+        web_search._pace["last"] = 0
+        t0 = _t.time()
+        for _ in range(3):
+            web_search._wait_turn()
+        took = _t.time() - t0
+    finally:
+        web_search.GAP = old
+    assert 0.55 < took < 1.5, took
+    return f"連續三次搜尋被排開（{took:.1f} 秒）；官方搜尋預設關閉"
+
+
 def t_update():
     import updater
     assert updater._ver("0.10.0") > updater._ver("0.9.9") > updater._ver("0.2.1"), "版本比較錯誤"
@@ -453,6 +473,7 @@ def main():
     check("自動模式", t_auto_pick)
     check("排程鎖", t_scheduler_lock)
     check("抓網頁", t_fetch, skip=net)
+    check("搜尋間隔 / 官方搜尋預設關閉", t_search_pacing)
     check("搜尋", t_search, skip=net)
     check("匯出 Word / PDF", t_export)
     check("檢查更新", t_update, skip=net)

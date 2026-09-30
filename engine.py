@@ -713,13 +713,16 @@ def chat_codex(p, model, messages, tools, live, timeout=600):
     codex 在同一次執行裡自己把工具迴圈跑完，每次呼叫由 MCP 伺服器寫成執行紀錄的步驟；這裡回傳最後的回覆。
     放在空資料夾、唯讀沙盒、不載入使用者的設定 / 規則 / MCP、不存對話紀錄。"""
     names = [t["function"]["name"] for t in tools or []]
-    # 搜尋改用 OpenAI 官方的網路搜尋：我們自己抓搜尋引擎的網頁，短時間搜幾次就被當成機器人擋掉，
-    # 還會拿到一堆無關的結果；官方搜尋不會被擋，找到的來源也完整得多
-    native_search = "web_search" in names
-    names = [n for n in names if n != "web_search"]
+    # 預設用我們自己的搜尋（web_search / fetch_url 走 MCP）。OpenAI 官方搜尋是 OpenAI 的伺服器替它搜、替它開網頁，
+    # 帶著 OAI-SearchBot / ChatGPT-User 這類 AI 身分：擋 AI 的網站不會出現在它的索引裡，打開也會被拒或拿到不同內容，
+    # 研究結果會偏向「肯給 AI 看」的來源。所以只在設定頁明確打開時才用（search.native）。
+    native_search = "web_search" in names and bool(cfg("search.native", False))
+    if native_search:
+        names = [n for n in names if n != "web_search"]
     system = messages[0]["content"] + (
         ("\n\n要上網搜尋時，用你內建的網頁搜尋。" if native_search else "")
-        + ("\n\n需要讀網頁或存檔時，用 autoworkflow 提供的工具。不要用你內建的 shell、檔案工具。" if names
+        + ("\n\n搜尋、讀網頁、存檔都用 autoworkflow 提供的工具。不要用你內建的 shell、檔案、網頁搜尋工具。" if names and not native_search
+           else "\n\n需要讀網頁或存檔時，用 autoworkflow 提供的工具。不要用你內建的 shell、檔案工具。" if names
            else "\n\n不要使用你內建的 shell、檔案工具。" if native_search
            else "\n\n不要使用你內建的 shell、檔案、瀏覽工具，直接用文字回答。"))
     cmd = [cli_exe(p), "exec", "--json", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",

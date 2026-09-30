@@ -1527,6 +1527,7 @@ async function loadSettings() {
     <div class="panel st-sec"><h3>搜尋與網頁</h3>
       ${txt("搜尋地區", "search.region", "DuckDuckGo 的地區代碼，例如 tw-tzh、hk-tzh、us-en。")}
       ${num("搜尋筆數", "search.limit", "", "筆")}
+      ${sw("GPT 用 OpenAI 官方搜尋", "search.native", "預設關閉。打開後 ChatGPT 訂閱改用 OpenAI 的搜尋：不會被搜尋引擎擋，但它帶著 AI 身分，擋 AI 的網站搜不到也讀不到，結果會偏向肯給 AI 看的來源。")}
       ${num("網頁最多讀幾字", "fetch.max_chars", "越多模型讀得越完整，但也越慢、越吃記憶體。", "字")}</div>
     <div class="panel st-sec"><h3>通知與匯出</h3>
       ${sw("桌面通知", "notify.enabled", "關掉後，工作流的「跳通知」會直接略過。")}

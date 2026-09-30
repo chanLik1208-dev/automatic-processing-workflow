@@ -13,7 +13,7 @@ NUM = {  # 路徑: (最小, 最大)
     "limits.max_steps": (1, 60), "limits.fail_streak": (1, 20), "limits.stall_seconds": (10, 3600),
     "search.limit": (1, 15), "fetch.max_chars": (1000, 100000),
 }
-BOOL = ["lmstudio_guard.nan_watchdog", "lmstudio_guard.raw_capture", "notify.enabled", "update.auto_check", "update.auto_install"]
+BOOL = ["lmstudio_guard.nan_watchdog", "lmstudio_guard.raw_capture", "notify.enabled", "update.auto_check", "update.auto_install", "search.native"]
 TEXT = {"language": 40, "search.region": 20, "export.browser_path": 500}
 
 

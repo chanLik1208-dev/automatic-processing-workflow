@@ -1695,6 +1695,7 @@ class SettingsTab(QScrollArea):
         f = self.section(v, "搜尋與網頁")
         self.txt(f, "搜尋地區", "search.region", "DuckDuckGo 的地區代碼，例如 tw-tzh、hk-tzh、us-en。")
         self.num(f, "搜尋筆數", "search.limit", 1, 15, "", "筆")
+        self.sw(f, "GPT 用 OpenAI 官方搜尋", "search.native", "預設關閉。打開後 ChatGPT 訂閱改用 OpenAI 的搜尋：不會被搜尋引擎擋，但它帶著 AI 身分，擋 AI 的網站搜不到也讀不到，結果會偏向肯給 AI 看的來源。")
         self.num(f, "網頁最多讀幾字", "fetch.max_chars", 1000, 100000, "", "字")
         f = self.section(v, "通知與匯出")
         self.sw(f, "桌面通知", "notify.enabled", "關掉後，工作流的「跳通知」會直接略過。")
