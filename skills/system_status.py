@@ -10,8 +10,10 @@ SPEC = {
 
 
 def _sh(*cmd):
+    # Windows 的預設編碼不是 UTF-8：輸出有中文就解不開，stdout 變成 None。一律用 UTF-8，解不開的字換掉，不要當掉
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout.strip()
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+        return (r.stdout or "").strip()
     except (OSError, subprocess.TimeoutExpired):
         return ""
 
@@ -22,7 +24,7 @@ def _memory():
         return out[-1] if out else "?"
     if sys.platform == "win32":
         out = _sh("powershell", "-NoProfile", "-Command",
-                  "$o=Get-CimInstance Win32_OperatingSystem;'{0:N1} GB 可用 / 共 {1:N1} GB' -f ($o.FreePhysicalMemory/1MB),($o.TotalVisibleMemorySize/1MB)")
+                  "[Console]::OutputEncoding=[Text.Encoding]::UTF8;$o=Get-CimInstance Win32_OperatingSystem;'{0:N1} GB 可用 / 共 {1:N1} GB' -f ($o.FreePhysicalMemory/1MB),($o.TotalVisibleMemorySize/1MB)")
         return out or "?"
     try:
         info = dict(l.split(":", 1) for l in open("/proc/meminfo", encoding="utf-8"))
