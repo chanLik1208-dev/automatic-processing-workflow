@@ -1672,8 +1672,19 @@ class SettingsTab(QScrollArea):
         for n, p in s.get("providers", {}).items():
             self.lf_p.addItem(p.get("label") or n, n)
         self.lf_p.setCurrentIndex(max(0, self.lf_p.findData(lf.get("provider") or "lmstudio")))
-        self.lf_m = QLineEdit(lf.get("model", ""))
-        self.lf_m.setPlaceholderText("留空：用那個來源的預設（LM Studio 會用當下載入的模型）")
+        self.lf_m = QComboBox()                       # 可以直接打字，也可以從那個來源的模型清單選
+        self.lf_m.setEditable(True)
+
+        def lf_models(cur=""):                        # 換來源時清空：上一個來源的模型名稱在新來源不一定有
+            name = self.lf_p.currentData()
+            st, conf = self.win.prov.get(name) or {}, (s.get("providers") or {}).get(name) or {}
+            models = [x for x in dict.fromkeys((conf.get("models") or []) + (st.get("models") or [])) if "embed" not in x.lower()]
+            self.lf_m.clear()
+            self.lf_m.addItems(([cur] if cur and cur not in models else []) + models)
+            self.lf_m.setCurrentText(cur)
+            self.lf_m.lineEdit().setPlaceholderText("留空：用那個來源的預設（LM Studio 會用當下載入的模型）")
+        lf_models(lf.get("model", ""))
+        self.lf_p.currentIndexChanged.connect(lambda _: lf_models())
         f.addRow(self.lf_on)
         f.addRow("用哪個來源", self.lf_p)
         f.addRow("模型", self.lf_m)
@@ -1936,7 +1947,7 @@ class SettingsTab(QScrollArea):
         out["readable_paths"] = self.paths.toPlainText().splitlines()
         if self.up_token.text().strip():
             out.setdefault("update", {})["new_token"] = self.up_token.text().strip()
-        out["local_fallback"] = {"enabled": self.lf_on.isChecked(), "provider": self.lf_p.currentData(), "model": self.lf_m.text()}
+        out["local_fallback"] = {"enabled": self.lf_on.isChecked(), "provider": self.lf_p.currentData(), "model": self.lf_m.currentText()}
         out["auto"] = {"cli_max_utilization": self.thr.value() / 100,
                        "seen_models": (self.s.get("auto") or {}).get("seen_models", []),   # 載入後才自動加入的不算被刪
                        "order": [{"provider": r["p"].currentData(), "model": r["m"].currentText().strip(), "max_daily_tokens": r["tok"].value(),

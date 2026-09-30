@@ -648,7 +648,7 @@ def _transcript(messages):
 
 def _parse_tool_json(text):
     """找回覆裡帶 tool_calls 的 JSON 物件；模型常會先講一句話再接 JSON，前面的話當作 say。"""
-    t = re.sub(r"```(?:json)?", "", text)
+    t = re.sub(r"```(?:json)?|</?tool_calls>", "", text)      # Gemini（agy）會把 JSON 包在 <tool_calls> 裡
     dec = json.JSONDecoder()
     for m in re.finditer(r"\{", t):
         try:
@@ -832,7 +832,7 @@ def chat_cli(p, model, messages, tools, live, timeout=600):
     if tools:
         system += TOOL_PROTOCOL.format(specs=json.dumps([t["function"] for t in tools], ensure_ascii=False, indent=1))
     if p.get("adapter") == "gemini":
-        text, usage = chat_agy(p, model or p.get("default_model") or "", system, messages, live, timeout)
+        text, usage = chat_agy(p, model or p.get("default_model") or "", system, messages, live, timeout, bool(tools))
         return _cli_reply(p, model or p.get("default_model") or "", text, "", tools, usage)
     model = model or p["default_model"]
     cmd = [cli_exe(p),
@@ -894,7 +894,7 @@ def chat_cli(p, model, messages, tools, live, timeout=600):
                        "completion_tokens": usage.get("output_tokens", 0)})
 
 
-def chat_agy(p, model, system, messages, live, timeout=600):
+def chat_agy(p, model, system, messages, live, timeout=600, has_tools=True):
     """Gemini 訂閱（Antigravity CLI，agy）。跟 Claude 一樣只把它當「會思考的模型」，工具走文字協定、由我們執行：
     agy 內建的搜尋和開網頁是 Google 的伺服器帶 AI 身分去抓，會被差別對待。
     agy 沒有系統提示的參數，所以系統提示放在輸入最前面；輸入用 stream-json 從標準輸入送（沒有命令列長度限制）。
@@ -903,9 +903,32 @@ def chat_agy(p, model, system, messages, live, timeout=600):
            "--sandbox", "--disable-slash-commands"]
     if model:
         cmd += ["--model", model]
-    prompt = (f"## 系統指示（嚴格遵守）\n{system}\n\n"
-              "不要使用你內建的任何工具（搜尋網頁、讀網址、執行指令、讀寫檔案、瀏覽器、子代理都不行），"
-              "需要工具時只能照上面的格式輸出 JSON。\n\n" + _transcript(messages))
+    rule = AGY_NO_TOOLS if has_tools else "不要使用你內建的任何工具或函式呼叫（function calling）功能，直接用文字回答。"
+    prompt = f"## 系統指示（嚴格遵守）\n{system}\n\n{rule}\n\n" + _transcript(messages)
+    try:
+        return _agy_once(p, cmd, prompt, live, timeout)
+    except AgyMalformedCall:
+        # Gemini 把我們的「工具 JSON」當成真的函式呼叫去叫（agy 裡沒有那個函式），格式就壞了。
+        # 加一段更直接的提醒再試一次；還是不行就照常丟錯，讓備援接手
+        live["last_token"] = time.time()
+        return _agy_once(p, cmd, AGY_RETRY + "\n\n" + prompt, live, timeout)
+
+
+# agy 會把它的內建工具（搜尋、讀網址、執行指令…）都給 Gemini。我們的工具協定是「在回覆裡寫一段 JSON 文字」，
+# Gemini 容易把它當成真的函式呼叫去叫一個不存在的函式，agy 就回「improperly formatted function call」。
+AGY_NO_TOOLS = ("不要使用你內建的任何工具或函式呼叫（function calling）功能：搜尋網頁、讀網址、執行指令、讀寫檔案、瀏覽器、子代理都不行。"
+                "上面說的「工具」不是你的函式，而是由我這邊執行的：需要時，把那段 JSON 當成一般文字直接寫在回覆裡，"
+                "前後加上 <tool_calls> 和 </tool_calls>，例如：\n"
+                '<tool_calls>{"say": "先搜尋", "tool_calls": [{"name": "web_search", "arguments": {"query": "關鍵字"}}]}</tool_calls>')
+AGY_RETRY = ("【重要】你上一次試圖用函式呼叫的方式呼叫工具，格式錯誤而失敗了。這次絕對不要使用任何函式呼叫，"
+             "只用純文字回覆；需要工具就把 JSON 寫在 <tool_calls> 和 </tool_calls> 之間，當作文字輸出。")
+
+
+class AgyMalformedCall(RuntimeError):
+    pass
+
+
+def _agy_once(p, cmd, prompt, live, timeout):
     tmp = tempfile.mkdtemp(prefix="wf-cli-")
     proc = subprocess.Popen(cmd, cwd=tmp, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace")
@@ -942,6 +965,8 @@ def chat_agy(p, model, system, messages, live, timeout=600):
         err = (result or {}).get("error") or errline or proc.stderr.read()[-400:] or f"結束代碼 {proc.returncode}"
         if re.search(r"sign in|not signed in|authenticat", err, re.I):
             err = "還沒登入：在終端機執行一次 agy，用 Google 帳號登入後再試。"
+        elif re.search(r"improperly formatted function call|MALFORMED_FUNCTION_CALL", err, re.I):
+            raise AgyMalformedCall(f"agy 執行失敗：Gemini 的工具呼叫格式錯誤（{err[:200]}）")
         raise RuntimeError(f"agy 執行失敗：{err[:400]}")
     u = result.get("usage") or {}
     return result.get("response") or "", {"prompt_tokens": u.get("input_tokens", 0) + u.get("cache_read_tokens", 0),

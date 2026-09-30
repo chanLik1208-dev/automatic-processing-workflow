@@ -846,6 +846,11 @@ document.addEventListener("keydown", e => {
 addEventListener("scroll", e => { if (combo && !combo.menu.contains(e.target)) comboClose(); }, true);
 addEventListener("resize", comboClose);
 document.addEventListener("input", e => { if (e.target.matches?.(".depth input[type=range], .depth-pop input[type=range]")) syncDepth(e.target); });
+document.addEventListener("change", e => {                      // 本地備用：換了來源，模型清單跟著換
+  if (e.target.id !== "lf-p") return;
+  const list = document.getElementById("lf-ml");
+  if (list) list.innerHTML = provModels(e.target.value).map(m => `<option value="${esc(m)}">`).join("");
+});
 document.addEventListener("change", e => {                      // 自動模式：換了來源，模型建議清單跟著換
   if (!e.target.matches?.('.auto-row [data-af="provider"]')) return;
   const row = e.target.closest(".auto-row"), inp = row.querySelector('[data-af="model"]');
@@ -1572,7 +1577,8 @@ async function loadSettings() {
         <span id="lf-status" style="font-size:13px;margin-left:8px">${(() => { const st = PROV[s.local_fallback?.provider || "lmstudio"];
           return st?.ok ? `<span class="ok-text">現在可用</span>` : `<span class="bad-text">現在不能用${st?.error ? "：" + esc(st.error) : ""}</span>`; })()}</span>
         <div class="hint">建議選 LM Studio 這類在自己電腦上跑的，網路斷了或雲端額度用完也能用。</div></div></div>
-      <div class="row"><label>模型</label><input type="text" class="full" id="lf-m" value="${esc(s.local_fallback?.model || "")}" placeholder="留空：用那個來源的預設（LM Studio 會用當下載入的模型）"></div></div>
+      <div class="row"><label>模型</label><div><input type="text" class="full" id="lf-m" data-list="lf-ml" autocomplete="off" value="${esc(s.local_fallback?.model || "")}" placeholder="留空：用那個來源的預設（LM Studio 會用當下載入的模型）">
+        <datalist id="lf-ml">${provModels(s.local_fallback?.provider || "lmstudio").map(m => `<option value="${esc(m)}">`).join("")}</datalist></div></div></div>
     <div class="panel st-sec"><h3>一般</h3>
       ${txt("回覆語言", "language", "會加在每個工作流的系統提示最後。", "繁體中文（台灣）")}
       ${num("監控頁 port", "server.port", "改了要重新啟動程式才會生效。")}
