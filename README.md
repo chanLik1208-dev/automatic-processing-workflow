@@ -36,7 +36,7 @@ Windows `%APPDATA%\AutoWorkflow`、Linux `~/.local/share/autoworkflow`（可用�
 - **DeepSeek API**：設定環境變數 `DEEPSEEK_API_KEY`
 
 自己編譯：`pip install pyinstaller && python build.py`（Python 3.13 以上；在哪個平台跑就產生哪個平台的版本）。
-推 `v*` 標籤時 GitHub Actions 會在四個平台各自編譯、做啟動測試，再發佈到 Releases。
+合併到 `main` 時，如果 `version.py` 的版本是新的，GitHub Actions 會自動在四個平台各自編譯、做啟動測試，全部通過才發佈到 Releases（不用手動打標籤；推 `v*` 標籤也照樣可以發佈）。
 
 ## 從原始碼啟動
 
