@@ -1,4 +1,4 @@
-import html, json, os, pathlib, re, shutil, subprocess, sys, tempfile, urllib.error, urllib.request
+import html, json, os, pathlib, re, shutil, subprocess, sys, threading, time, urllib.error, urllib.request
 from html.parser import HTMLParser
 
 SPEC = {
@@ -179,18 +179,50 @@ def _browser_dom(url):
     PROFILE.mkdir(parents=True, exist_ok=True)
     # Linux 用 root 跑時（容器、CI）Chrome 不肯在沙盒裡啟動；一般使用者不會走到這裡
     root = ["--no-sandbox"] if sys.platform.startswith("linux") and hasattr(os, "geteuid") and os.geteuid() == 0 else []
+    cmd = [browser, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", *root,
+           f"--user-data-dir={PROFILE}", "--virtual-time-budget=10000", "--dump-dom", url]
     try:
-        r = subprocess.run([browser, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", *root,
-                            f"--user-data-dir={PROFILE}", "--virtual-time-budget=10000", "--dump-dom", url],
-                           capture_output=True, timeout=60, stdin=subprocess.DEVNULL)
-    except subprocess.TimeoutExpired:
-        return "", "瀏覽器讀了 60 秒還沒讀完"
+        # 自己一個行程群組：結束時連 Chrome 的子行程（繪圖、網路）一起關掉，不會留在背景
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                start_new_session=sys.platform != "win32")
     except OSError as e:
         return "", f"瀏覽器開不起來：{e}"
-    dom = r.stdout.decode("utf-8", errors="replace")
+    # macOS 上 Chrome 印完網頁常常不會自己結束（匯出 PDF 也有同樣情況）：
+    # 邊讀邊收，看到 </html> 而且一秒多沒有新輸出，就當作讀完、把它關掉
+    chunks, err, last = [], [], [time.time()]
+
+    def pump(stream, into, mark):
+        for b in iter(lambda: stream.read1(65536) if hasattr(stream, "read1") else stream.read(65536), b""):
+            into.append(b)
+            if mark:
+                last[0] = time.time()
+
+    threads = [threading.Thread(target=pump, args=(proc.stdout, chunks, True), daemon=True),
+               threading.Thread(target=pump, args=(proc.stderr, err, False), daemon=True)]
+    for t in threads:
+        t.start()
+    deadline = time.time() + 60
+    while proc.poll() is None and time.time() < deadline:
+        if b"</html>" in b"".join(chunks[-3:]).lower() and time.time() - last[0] > 1.2:
+            break
+        time.sleep(0.2)
+    timed_out = proc.poll() is None and time.time() >= deadline
+    if sys.platform != "win32":
+        try:
+            os.killpg(proc.pid, 9)           # 子行程也一起（主行程已經結束時，子行程可能還在）
+        except OSError:
+            pass
+    elif proc.poll() is None:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+    proc.wait()
+    for t in threads:
+        t.join(timeout=2)
+    dom = b"".join(chunks).decode("utf-8", errors="replace")
     if not dom.strip():
+        if timed_out:
+            return "", "瀏覽器讀了 60 秒還沒讀完"
         # 同一個瀏覽器資料夾只能有一個瀏覽器在用：登入用的視窗還開著時，背景讀取會拿到空的
-        why = [l for l in r.stderr.decode("utf-8", errors="replace").splitlines() if "ERROR" in l or "rror:" in l][-1:]
+        why = [l for l in b"".join(err).decode("utf-8", errors="replace").splitlines() if "ERROR" in l or "rror:" in l][-1:]
         return "", "瀏覽器沒有回傳內容；如果「登入瀏覽器」的視窗還開著，先把它關掉再試" + (f"（{why[0][-160:]}）" if why else "")
     return dom, ""
 
