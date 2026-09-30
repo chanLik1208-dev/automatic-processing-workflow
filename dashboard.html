@@ -310,6 +310,15 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .skills label { display: flex; gap: 6px; align-items: baseline; font-size: 14px; cursor: pointer; padding: 3px 0; }
 .skills small { color: var(--muted); font-size: 11.5px; }
 @media (max-width: 600px) { .row { grid-template-columns: 1fr; gap: 4px; } .row > label { padding-top: 0; } }
+/* 模型下拉：不用瀏覽器內建的 datalist（macOS 的 WebView 只在打字時才出現、而且會依已填的文字過濾掉其他選項） */
+input[data-list] { padding-right: 26px; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%; background-size: 5px 5px; background-repeat: no-repeat; }
+.combo-menu { position: fixed; z-index: 1000; max-height: 260px; overflow-y: auto; background: var(--panel); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 4px; font-size: 13.5px; }
+.combo-menu div { padding: 6px 10px; border-radius: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.combo-menu div.on, .combo-menu div:hover { background: var(--accent); color: var(--accent-ink); }
+.combo-menu .empty { color: var(--muted); cursor: default; }
+.combo-menu .empty:hover { background: none; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -782,7 +791,66 @@ function syncDepth(input) {
   });
   if (input.classList.contains("run-depth") && selWf) runDepth[selWf] = +input.value;
 }
+// ---------- 模型下拉（取代 datalist） ----------
+// 點一下就列出「全部」可選模型；打字時才過濾，過濾到沒有就照樣列全部。選項來源還是旁邊的 <datalist>（別處會更新它）
+let combo = null;                                          // {input, menu, items, idx}
+function comboClose() { if (combo) { combo.menu.remove(); combo = null; } }
+function comboOpen(input, filter) {
+  const list = document.getElementById(input.dataset.list);
+  const all = list ? [...list.options].map(o => o.value).filter(Boolean) : [];
+  const q = filter ? input.value.trim().toLowerCase() : "";
+  let items = q ? all.filter(m => m.toLowerCase().includes(q)) : all;
+  if (!items.length) items = all;
+  if (!combo || combo.input !== input) {
+    comboClose();
+    const menu = document.createElement("div");
+    menu.className = "combo-menu";
+    menu.addEventListener("mousedown", e => e.preventDefault());   // 點選項時不要讓輸入框失去焦點
+    menu.addEventListener("click", e => { const d = e.target.closest("[data-v]"); if (d) comboPick(d.dataset.v); });
+    document.body.appendChild(menu);
+    combo = {input, menu};
+  }
+  combo.items = items; combo.idx = items.indexOf(input.value);
+  combo.menu.innerHTML = items.length ? items.map((m, i) => `<div data-v="${esc(m)}" class="${i === combo.idx ? "on" : ""}" title="${esc(m)}">${esc(m)}</div>`).join("")
+    : `<div class="empty">還沒有可選的模型（來源連上後會出現）；也可以直接輸入</div>`;
+  const r = input.getBoundingClientRect(), below = innerHeight - r.bottom;
+  Object.assign(combo.menu.style, {left: r.left + "px", width: r.width + "px",
+    top: below > 200 || below > r.top ? (r.bottom + 4) + "px" : "", bottom: below > 200 || below > r.top ? "" : (innerHeight - r.top + 4) + "px"});
+}
+function comboPick(v) {
+  const input = combo.input;
+  input.value = v;
+  input.dispatchEvent(new Event("input", {bubbles: true}));
+  input.dispatchEvent(new Event("change", {bubbles: true}));
+  comboClose();
+}
+document.addEventListener("mousedown", e => {
+  const inp = e.target.closest?.("input[data-list]");
+  if (inp) { combo?.input === inp ? comboClose() : comboOpen(inp, false); return; }
+  if (!e.target.closest?.(".combo-menu")) comboClose();
+});
+document.addEventListener("focusin", e => { if (e.target.matches?.("input[data-list]") && combo?.input !== e.target) comboOpen(e.target, false); });
+document.addEventListener("focusout", e => { if (combo && e.target === combo.input) setTimeout(() => { if (document.activeElement !== combo?.input) comboClose(); }, 0); });
+document.addEventListener("input", e => { if (e.target.matches?.("input[data-list]") && e.isTrusted) comboOpen(e.target, true); });
+document.addEventListener("keydown", e => {
+  if (!combo || e.target !== combo.input) return;
+  const n = combo.items.length;
+  if (e.key === "Escape") { comboClose(); e.preventDefault(); }
+  else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && n) {
+    combo.idx = ((combo.idx < 0 ? (e.key === "ArrowDown" ? -1 : 0) : combo.idx) + (e.key === "ArrowDown" ? 1 : -1) + n) % n;
+    [...combo.menu.children].forEach((d, i) => d.classList.toggle("on", i === combo.idx));
+    combo.menu.children[combo.idx]?.scrollIntoView({block: "nearest"});
+    e.preventDefault();
+  } else if (e.key === "Enter" && combo.idx >= 0 && n) { comboPick(combo.items[combo.idx]); e.preventDefault(); }
+});
+addEventListener("scroll", e => { if (combo && !combo.menu.contains(e.target)) comboClose(); }, true);
+addEventListener("resize", comboClose);
 document.addEventListener("input", e => { if (e.target.matches?.(".depth input[type=range], .depth-pop input[type=range]")) syncDepth(e.target); });
+document.addEventListener("change", e => {                      // 本地備用：換了來源，模型清單跟著換
+  if (e.target.id !== "lf-p") return;
+  const list = document.getElementById("lf-ml");
+  if (list) list.innerHTML = provModels(e.target.value).map(m => `<option value="${esc(m)}">`).join("");
+});
 document.addEventListener("change", e => {                      // 自動模式：換了來源，模型建議清單跟著換
   if (!e.target.matches?.('.auto-row [data-af="provider"]')) return;
   const row = e.target.closest(".auto-row"), inp = row.querySelector('[data-af="model"]');
@@ -1454,7 +1522,7 @@ function provCard(name, p) {
           <div class="row2" style="margin-top:6px"><input type="password" class="full" data-pf="new_key" placeholder="${p.key_from_env ? "目前使用環境變數裡的 key" : p.key_hint || "還沒設定"}；要換就在這裡貼上新的">
             ${p.key_hint ? `<button type="button" class="ghost" data-key-clear>清除 key</button>` : ""}</div>
           <div class="hint">key 只存在這台電腦的設定檔（只有你的帳號能讀），不會再顯示出來。</div></div></div>`}
-    <div class="row"><label>預設模型</label><div><input type="text" class="full" data-pf="default_model" list="ml-${esc(name)}" value="${esc(p.default_model || "")}"
+    <div class="row"><label>預設模型</label><div><input type="text" class="full" data-pf="default_model" data-list="ml-${esc(name)}" autocomplete="off" value="${esc(p.default_model || "")}"
         placeholder="${name === "lmstudio" ? "留空：用 LM Studio 當下載入的模型" : cli ? "留空：用 CLI 自己的預設" : ""}">
       <datalist id="ml-${esc(name)}">${models.map(m => `<option value="${esc(m)}">`).join("")}</datalist></div></div>
   </div>`;
@@ -1478,7 +1546,7 @@ function autoRow(it) {
     <div class="prov-h"><div class="row2" style="margin:0">
       <button type="button" class="ghost" data-auto-up title="往上">↑</button><button type="button" class="ghost" data-auto-down title="往下">↓</button>
       <select data-af="provider">${names.map(n => `<option value="${n}" ${n === it.provider ? "selected" : ""}>${esc(SETTINGS.providers[n].label || n)}</option>`).join("")}</select>
-      <input type="text" data-af="model" value="${esc(it.model || "")}" list="aml-${auid}" placeholder="${esc(modelHint(it.provider))}" style="width:230px">
+      <input type="text" data-af="model" value="${esc(it.model || "")}" data-list="aml-${auid}" autocomplete="off" placeholder="${esc(modelHint(it.provider))}" style="width:230px">
       <datalist id="aml-${auid}">${provModels(it.provider).map(m => `<option value="${esc(m)}">`).join("")}</datalist></div>
       <button type="button" class="ghost" data-auto-del style="color:var(--bad)">移除</button></div>
     <div class="row2"><span class="muted" style="font-size:13px">每天最多</span>
@@ -1509,7 +1577,8 @@ async function loadSettings() {
         <span id="lf-status" style="font-size:13px;margin-left:8px">${(() => { const st = PROV[s.local_fallback?.provider || "lmstudio"];
           return st?.ok ? `<span class="ok-text">現在可用</span>` : `<span class="bad-text">現在不能用${st?.error ? "：" + esc(st.error) : ""}</span>`; })()}</span>
         <div class="hint">建議選 LM Studio 這類在自己電腦上跑的，網路斷了或雲端額度用完也能用。</div></div></div>
-      <div class="row"><label>模型</label><input type="text" class="full" id="lf-m" value="${esc(s.local_fallback?.model || "")}" placeholder="留空：用那個來源的預設（LM Studio 會用當下載入的模型）"></div></div>
+      <div class="row"><label>模型</label><div><input type="text" class="full" id="lf-m" data-list="lf-ml" autocomplete="off" value="${esc(s.local_fallback?.model || "")}" placeholder="留空：用那個來源的預設（LM Studio 會用當下載入的模型）">
+        <datalist id="lf-ml">${provModels(s.local_fallback?.provider || "lmstudio").map(m => `<option value="${esc(m)}">`).join("")}</datalist></div></div></div>
     <div class="panel st-sec"><h3>一般</h3>
       ${txt("回覆語言", "language", "會加在每個工作流的系統提示最後。", "繁體中文（台灣）")}
       ${num("監控頁 port", "server.port", "改了要重新啟動程式才會生效。")}

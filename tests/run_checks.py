@@ -377,7 +377,20 @@ def t_gemini_agy():
     assert r["usage"] == {"prompt_tokens": 10, "completion_tokens": 5}, r["usage"]
     sent = _j.loads((HOME / "agy-input.txt").read_text(encoding="utf-8"))
     assert sent["event"] == "user" and "SYS" in sent["message"]["content"] and "問題" in sent["message"]["content"], sent
-    return "舊設定換成 agy；系統提示和對話從標準輸入送出；回覆解析成工具呼叫"
+    # Gemini 把工具 JSON 當成函式呼叫而失敗時：自動加強提醒再試一次；回覆包在 <tool_calls> 裡也要解析得出來
+    tagged = "<tool_calls>" + reply.replace('"say": "先搜尋", ', "") + "</tool_calls>"
+    err = {"event": "result", "result": {"status": "ERROR", "response": "",
+                                         "error": "Your previous response contained an improperly formatted function call"}}
+    ok = {"event": "result", "result": {"status": "OK", "response": tagged, "usage": {}}}
+    fake.write_text("#!/bin/sh\nd=\"$(dirname \"$0\")\"\ncat > \"$d/agy-input.txt\"\n"
+                    "if [ ! -f \"$d/agy-tried\" ]; then touch \"$d/agy-tried\"; "
+                    f"echo '{_j.dumps(err, ensure_ascii=False)}'; exit 3; fi\n"
+                    f"echo '{_j.dumps(ok, ensure_ascii=False)}'\n")
+    r = engine.chat_cli(p, "", [{"role": "system", "content": "SYS"}, {"role": "user", "content": "問題"}], tools, {})
+    m = r["choices"][0]["message"]
+    assert m["tool_calls"][0]["function"]["name"] == "web_search" and not m.get("content"), m
+    assert "【重要】" in _j.loads((HOME / "agy-input.txt").read_text(encoding="utf-8"))["message"]["content"]
+    return "舊設定換成 agy；從標準輸入送出；解析工具呼叫；格式錯誤時自動加強提醒重試"
 
 
 def t_browser_read():
