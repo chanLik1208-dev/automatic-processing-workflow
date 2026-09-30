@@ -24,6 +24,10 @@ import webbrowser
 # skill 是執行期才從資料夾載入的 .py，打包工具看不到它們用了哪些標準函式庫，所以在這裡先 import 一次
 import base64, fnmatch, glob, html, html.parser, shutil, sqlite3, subprocess, tempfile  # noqa: F401,E401
 import urllib.error, urllib.parse, xml.etree.ElementTree  # noqa: F401,E401
+try:
+    import pypdf  # noqa: F401  fetch_url 讀 PDF 用；skill 是執行期才載入，打包工具看不到，要在這裡 import
+except ImportError:
+    pass
 
 import engine
 import server

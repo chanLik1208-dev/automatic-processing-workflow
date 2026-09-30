@@ -1,4 +1,5 @@
 import html, json, pathlib, re, urllib.request
+from html.parser import HTMLParser
 
 SPEC = {
     "name": "fetch_url",
@@ -7,6 +8,16 @@ SPEC = {
         "url": {"type": "string"},
         "max_chars": {"type": "integer", "description": "最多回傳幾個字（不填就用設定值）"}},
         "required": ["url"]},
+}
+
+# 跟一般瀏覽器一樣的請求標頭。寫明「ai-workflow」或只送一個 User-Agent 的請求，
+# 有些網站會直接拒絕（實測 Reuters 401、Medium 403），或給 AI 看不一樣的內容，研究結果就會偏掉
+BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/141.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "zh-TW,zh-HK;q=0.9,zh;q=0.8,en;q=0.7",
+    "Upgrade-Insecure-Requests": "1",
 }
 
 # 這些區塊幾乎不會是正文
@@ -41,6 +52,70 @@ def _largest(page, tag):
     return max(blocks, key=lambda b: len(re.sub(r"<[^>]+>", "", b)), default="")
 
 
+VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+HIDDEN_STYLE = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*0(?![.\d])|opacity\s*:\s*0(?![.\d])", re.I)
+
+
+class _Visible(HTMLParser):
+    """把一般人在瀏覽器裡看不到的部分拿掉（hidden、aria-hidden、display:none…）。
+    有些網頁會把「只給 AI 看」的指令藏在這些地方，叫模型改結論、忽略資訊；人看不到，模型卻會照單全收。"""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=False)
+        self.out, self.skip, self.removed = [], 0, 0
+
+    @staticmethod
+    def _hidden(attrs):
+        a = {k.lower(): (v or "") for k, v in attrs}
+        return ("hidden" in a or a.get("aria-hidden", "").lower() == "true"
+                or bool(HIDDEN_STYLE.search(a.get("style", ""))) or a.get("type", "").lower() == "hidden")
+
+    def handle_starttag(self, tag, attrs):
+        if tag in VOID:
+            if not self.skip:
+                self.out.append(self.get_starttag_text())
+            return
+        if self.skip or self._hidden(attrs):
+            self.skip += 1
+            self.removed += self.skip == 1
+            return
+        self.out.append(self.get_starttag_text())
+
+    def handle_startendtag(self, tag, attrs):
+        if not self.skip:
+            self.out.append(self.get_starttag_text())
+
+    def handle_endtag(self, tag):
+        if tag in VOID:
+            return
+        if self.skip:
+            self.skip -= 1
+            return
+        self.out.append(f"</{tag}>")
+
+    def handle_data(self, data):
+        if not self.skip:
+            self.out.append(data)
+
+    def handle_entityref(self, name):
+        if not self.skip:
+            self.out.append(f"&{name};")
+
+    def handle_charref(self, name):
+        if not self.skip:
+            self.out.append(f"&#{name};")
+
+
+def _visible_only(page):
+    p = _Visible()
+    try:
+        p.feed(page)
+        p.close()
+    except Exception:
+        return page, 0                  # 解析不了就用原本的（寧可多讀，不要整頁讀不到）
+    return "".join(p.out), p.removed
+
+
 def _to_lines(fragment):
     fragment = re.sub(rf"(?is)<({DROP})\b.*?</\1>", " ", fragment)
     fragment = re.sub(rf"(?i)</?({BLOCK})\b[^>]*>|<br\s*/?>", "\n", fragment)
@@ -53,16 +128,45 @@ def _keep(line):
     return len(line) >= 40 or (len(line) >= 12 and SENTENCE.search(line))
 
 
+def _pdf(data, max_chars):
+    """PDF 要先轉成文字；直接當文字解碼只會得到一堆亂碼（%PDF-1.5 ...），模型卻以為讀過了。"""
+    try:
+        import io
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(data))
+        pages, text = len(reader.pages), []
+        for i, page in enumerate(reader.pages[:40]):
+            t = (page.extract_text() or "").strip()
+            if t:
+                text.append(f"［第 {i + 1} 頁］\n{t}")
+            if sum(map(len, text)) > max_chars:
+                break
+    except Exception as e:
+        return f"這是 PDF，但讀不出文字（{type(e).__name__}）。請換一個來源，不要當作已經讀過。"
+    body = "\n".join(text)
+    if not body.strip():
+        return "這是 PDF，但裡面沒有文字（可能是掃描的圖片）。請換一個來源，不要當作已經讀過。"
+    return (f"（PDF，共 {pages} 頁）\n" + body)[:max_chars]
+
+
 def run(url, max_chars=None):
     max_chars = int(max_chars or _cfg("fetch.max_chars", 6000))
     if not url.lower().startswith(("http://", "https://")):
         return "只接受 http:// 或 https:// 網址"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Macintosh) ai-workflow"})
+    req = urllib.request.Request(url, headers=BROWSER_HEADERS)
     with urllib.request.urlopen(req, timeout=20) as r:
         ctype = r.headers.get("Content-Type", "")
-        raw = r.read().decode(r.headers.get_content_charset() or "utf-8", errors="replace")
+        data = r.read(30 * 1024 * 1024)
+        charset = r.headers.get_content_charset()
+    if "pdf" in ctype.lower() or data[:5] == b"%PDF-":
+        return _pdf(data, max_chars)
+    kind = ctype.split(";")[0].strip().lower()
+    if kind.startswith(("image/", "audio/", "video/", "font/")) or kind in ("application/zip", "application/octet-stream"):
+        return f"這是 {kind} 檔案，不是文字，沒辦法讀內容。請換一個來源，不要當作已經讀過。"
+    raw = data.decode(charset or "utf-8", errors="replace")
     if "html" not in ctype and not raw.lstrip().startswith("<"):
         return raw[:max_chars]          # JSON、純文字等直接回傳
+    raw, hidden = _visible_only(raw)
 
     title = _meta(raw, "og:title", "twitter:title")
     if not title:
@@ -94,6 +198,7 @@ def run(url, max_chars=None):
         return (f"抓不到這個網頁的正文（標題：{title or '無'}）。這類頁面通常要執行 JavaScript 才會出現內容，"
                 "請換一個來源，不要當作已經讀過。")
     head = [f"標題：{title}" if title else "", f"日期：{date}" if date else "",
-            f"摘要：{desc}" if desc and desc.rstrip(".…")[:40] not in text else ""]
+            f"摘要：{desc}" if desc and desc.rstrip(".…")[:40] not in text else "",
+            f"（已略過 {hidden} 個一般人看不到的區塊）" if hidden else ""]
     out = "\n".join(h for h in head if h)
     return (out + "\n---\n" + text if out else text)[:max_chars]

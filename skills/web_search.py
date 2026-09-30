@@ -1,4 +1,4 @@
-import base64, html, json, pathlib, re, urllib.parse, urllib.request
+import base64, html, http.cookiejar, json, pathlib, random, re, threading, time, urllib.parse, urllib.request
 
 SPEC = {
     "name": "web_search",
@@ -21,7 +21,29 @@ def _cfg(path, default):
         return default
 
 
-UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/126 Safari/537.36"
+UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+HEADERS = {"User-Agent": UA, "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+           "Accept-Language": "zh-TW,zh-HK;q=0.9,zh;q=0.8,en;q=0.7"}
+
+
+# 像同一個瀏覽器：保留搜尋引擎發的 cookie，而不是每次都像全新的陌生訪客
+_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+_pace = {"last": 0.0, "lock": threading.Lock()}
+GAP = (2.0, 4.0)        # 兩次搜尋之間至少隔幾秒（隨機）；連續秒搜十幾次是被當成機器人的主因
+
+
+def _wait_turn():
+    """跟上一次搜尋保持間隔。模型常常一口氣丟好幾組關鍵字，這裡把它們排開。"""
+    with _pace["lock"]:
+        gap = random.uniform(*GAP) - (time.time() - _pace["last"])
+        if gap > 0:
+            time.sleep(gap)
+        _pace["last"] = time.time()
+
+
+def _open(req):
+    with _OPENER.open(req, timeout=20) as r:
+        return r.read().decode("utf-8", errors="replace")
 
 
 def _clean(s):
@@ -36,9 +58,10 @@ def _real_url(href):
 
 def _duckduckgo(query, limit):
     data = urllib.parse.urlencode({"q": query, "kl": _cfg("search.region", "tw-tzh")}).encode()
-    req = urllib.request.Request("https://html.duckduckgo.com/html/", data=data, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        page = r.read().decode("utf-8", errors="replace")
+    req = urllib.request.Request("https://html.duckduckgo.com/html/", data=data, headers=HEADERS)
+    page = _open(req)
+    if "result__a" not in page and re.search(r"anomaly|challenge|bots", page, re.I):
+        raise Blocked("DuckDuckGo")                    # 機器人驗證頁，不是真的沒結果
     titles = re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', page, re.S)
     snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', page, re.S)
     out = []
@@ -48,6 +71,26 @@ def _duckduckgo(query, limit):
             continue
         out.append((_clean(title), url, _clean(snippets[i]) if i < len(snippets) else ""))
     return out[:limit]
+
+
+class Blocked(Exception):
+    """搜尋引擎把請求當成機器人擋了（驗證頁、或塞一堆無關的結果）。"""
+
+
+def _terms(text):
+    """比對相關性用的詞：英文單字、中文每兩個字一組。"""
+    t = text.lower()
+    words = set(re.findall(r"[a-z0-9]{3,}", t))
+    for run in re.findall(r"[\u4e00-\u9fff]+", t):
+        words |= {run[i:i + 2] for i in range(len(run) - 1)} or {run}
+    return words
+
+
+def _relevant(query, results):
+    """Bing 被當成機器人時不會回錯誤，而是塞一堆跟關鍵字無關的結果（Costco、醫院掛號…）。
+    標題和摘要跟關鍵字一個詞都對不上的就丟掉。"""
+    q = _terms(re.sub(r'\b(OR|AND|site:\S+)\b|["()]', " ", query))
+    return [r for r in results if not q or q & _terms(r[0] + " " + r[2])]
 
 
 def _bing_url(href):
@@ -66,9 +109,7 @@ def _bing(query, limit):
     region = _cfg("search.region", "tw-tzh")
     cc = {"tw": "TW", "hk": "HK", "us": "US", "cn": "CN", "jp": "JP"}.get(region.split("-")[0], "")
     url = "https://www.bing.com/search?" + urllib.parse.urlencode({"q": query, "setlang": "zh-hant" if "tzh" in region else "", "cc": cc})
-    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8"})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        page = r.read().decode("utf-8", errors="replace")
+    page = _open(urllib.request.Request(url, headers=HEADERS))
     out = []
     for it in re.findall(r'<li class="b_algo"[^>]*>(.*?)</li>', page, re.S):
         a = re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', it, re.S)
@@ -76,21 +117,42 @@ def _bing(query, limit):
         if a:
             snip = re.sub(r"\s*…?\s*(深入閱讀|閱讀更多|Read more)\s*$", "", _clean(p.group(1))) if p else ""
             out.append((_clean(a.group(2)), _bing_url(a.group(1)), snip))
-    return out[:limit]
+    kept = _relevant(query, out)
+    if out and not kept:
+        raise Blocked("Bing")                           # 全部無關：當成被擋，不能把垃圾交給模型
+    return kept[:limit]
 
 
-def run(query, limit=None):
-    limit = max(1, min(15, int(limit or _cfg("search.limit", 8))))
-    results, engine = [], ""
-    # DuckDuckGo 偶爾會把請求當成機器人擋掉（共用網路、雲端機器最常見）；擋掉就改用 Bing
+def _search(query, limit):
+    results, engine, blocked = [], "", []
+    # DuckDuckGo 偶爾會把請求當成機器人擋掉（短時間搜很多次、共用網路、雲端機器最常見）；擋掉就改用 Bing
     for name, fn in (("DuckDuckGo", _duckduckgo), ("Bing", _bing)):
         try:
             results = fn(query, limit)
+        except Blocked:
+            blocked.append(name)
+            results = []
         except Exception:
             results = []
         if results:
             engine = name
             break
+    return results, engine, blocked
+
+
+def run(query, limit=None):
+    limit = max(1, min(15, int(limit or _cfg("search.limit", 8))))
+    _wait_turn()
+    results, engine, blocked = _search(query, limit)
+    if not results and blocked:
+        # 被擋通常是短時間的限流：停一下再試一次，還是被擋才照實回報
+        time.sleep(random.uniform(8, 12))
+        _pace["last"] = time.time()
+        results, engine, blocked = _search(query, limit)
+    if not results and blocked:
+        # 一定要講清楚是「被擋」，不然模型會把「搜不到」當成「沒有這回事」寫進結論
+        return (f"[搜尋被擋] {'、'.join(blocked)} 把這次搜尋當成機器人擋了，這不代表沒有相關資料。"
+                "不要據此下「查無資料」的結論；可以改用已知的網址直接讀，或在報告裡註明搜尋受阻。")
     if not results:
-        return f"搜尋「{query}」沒有結果（也可能是搜尋引擎暫時擋了請求）"
+        return f"搜尋「{query}」沒有結果"
     return "\n".join(f"{i}. {t}\n   {u}\n   {sn}" for i, (t, u, sn) in enumerate(results, 1)) + f"\n（搜尋引擎：{engine}）"

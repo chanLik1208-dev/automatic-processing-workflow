@@ -1,6 +1,12 @@
 import re, urllib.request
 import xml.etree.ElementTree as ET
 
+# 跟一般瀏覽器一樣的請求標頭：寫明是 AI 工具的請求，有些網站會拒絕或給不一樣的內容
+HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+                         "Chrome/141.0.0.0 Safari/537.36",
+           "Accept": "application/rss+xml,application/atom+xml,application/xml;q=0.9,text/xml;q=0.8,*/*;q=0.5",
+           "Accept-Language": "zh-TW,zh-HK;q=0.9,zh;q=0.8,en;q=0.7"}
+
 SPEC = {
     "name": "read_rss",
     "description": "讀 RSS / Atom feed，回傳最新幾則的標題、連結、摘要。",
@@ -20,7 +26,7 @@ def _t(el, *names):
 
 
 def run(url, limit=10):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 ai-workflow"})
+    req = urllib.request.Request(url, headers=HEADERS)
     with urllib.request.urlopen(req, timeout=20) as r:
         root = ET.fromstring(r.read())
     ns = "{http://www.w3.org/2005/Atom}"

@@ -15,7 +15,11 @@ def run(url, expect=""):
         return "只接受 http:// 或 https:// 網址"
     t0 = time.time()
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "ai-workflow-healthcheck"})
+        # 用一般瀏覽器的標頭：用奇怪的 User-Agent 巡檢，拿到的可能是擋機器人的頁面，而不是使用者實際看到的狀態
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/141.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8", "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.7"})
         with urllib.request.urlopen(req, timeout=10) as r:
             code, body = r.status, r.read(2000).decode(errors="replace")
     except urllib.error.HTTPError as e:
