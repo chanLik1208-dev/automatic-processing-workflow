@@ -21,7 +21,9 @@ def _cfg(path, default):
         return default
 
 
-UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/126 Safari/537.36"
+UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+HEADERS = {"User-Agent": UA, "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+           "Accept-Language": "zh-TW,zh-HK;q=0.9,zh;q=0.8,en;q=0.7"}
 
 
 def _clean(s):
@@ -36,7 +38,7 @@ def _real_url(href):
 
 def _duckduckgo(query, limit):
     data = urllib.parse.urlencode({"q": query, "kl": _cfg("search.region", "tw-tzh")}).encode()
-    req = urllib.request.Request("https://html.duckduckgo.com/html/", data=data, headers={"User-Agent": UA})
+    req = urllib.request.Request("https://html.duckduckgo.com/html/", data=data, headers=HEADERS)
     with urllib.request.urlopen(req, timeout=20) as r:
         page = r.read().decode("utf-8", errors="replace")
     if "result__a" not in page and re.search(r"anomaly|challenge|bots", page, re.I):
@@ -88,7 +90,7 @@ def _bing(query, limit):
     region = _cfg("search.region", "tw-tzh")
     cc = {"tw": "TW", "hk": "HK", "us": "US", "cn": "CN", "jp": "JP"}.get(region.split("-")[0], "")
     url = "https://www.bing.com/search?" + urllib.parse.urlencode({"q": query, "setlang": "zh-hant" if "tzh" in region else "", "cc": cc})
-    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8"})
+    req = urllib.request.Request(url, headers=HEADERS)
     with urllib.request.urlopen(req, timeout=20) as r:
         page = r.read().decode("utf-8", errors="replace")
     out = []
