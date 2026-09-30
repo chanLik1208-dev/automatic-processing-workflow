@@ -690,14 +690,38 @@ def _mcp_command():
     return sys.executable, [str(APP_DIR / "app.py"), "--mcp-skills"]
 
 
+def _record_native_search(run_id, item, ms):
+    """OpenAI 官方搜尋也寫成執行步驟，監控頁照樣看得到它搜了什麼、打開了哪些網頁。"""
+    a, res = item.get("action") or {}, item.get("results") or []
+    if a.get("type") == "search":
+        # 一次搜尋可能同時查好幾組關鍵字（action.queries），也可能只有 item.query
+        q = "；".join(a.get("queries") or []) or a.get("query") or (item.get("query") or "").rstrip(" .…")
+        a = {**a, "query": q}
+        out = "\n".join(f"{i}. {r.get('title', '').strip()}\n   {r.get('url', '')}\n   {(r.get('snippet') or '').strip()[:300]}"
+                        for i, r in enumerate(res, 1)) or f"搜尋「{a.get('query', '')}」沒有結果"
+        add_step(run_id, next_idx(run_id), "tool", "web_search", json.dumps({"query": a.get("query", "")}, ensure_ascii=False),
+                 out + "\n（搜尋引擎：OpenAI 官方搜尋）", ms)
+    elif res and res[0].get("url"):                           # 打開某個網頁
+        r = res[0]
+        add_step(run_id, next_idx(run_id), "tool", "fetch_url", json.dumps({"url": r["url"]}, ensure_ascii=False),
+                 f"{(r.get('title') or '').strip()}\n（由 OpenAI 官方搜尋讀取，全文不經過本程式）", ms)
+
+
 def chat_codex(p, model, messages, tools, live, timeout=600):
     """ChatGPT 訂閱（codex exec）。codex 是會自己跑工具的 agent，所以工具不走文字格式，
     而是用 MCP 交給它（mcp_skills.py）：GPT 用原生的工具呼叫，比較不會說「沒有這個工具」而放棄。
     codex 在同一次執行裡自己把工具迴圈跑完，每次呼叫由 MCP 伺服器寫成執行紀錄的步驟；這裡回傳最後的回覆。
     放在空資料夾、唯讀沙盒、不載入使用者的設定 / 規則 / MCP、不存對話紀錄。"""
+    names = [t["function"]["name"] for t in tools or []]
+    # 搜尋改用 OpenAI 官方的網路搜尋：我們自己抓搜尋引擎的網頁，短時間搜幾次就被當成機器人擋掉，
+    # 還會拿到一堆無關的結果；官方搜尋不會被擋，找到的來源也完整得多
+    native_search = "web_search" in names
+    names = [n for n in names if n != "web_search"]
     system = messages[0]["content"] + (
-        "\n\n需要資料或要存檔時，用 autoworkflow 提供的工具。不要用你內建的 shell、檔案、瀏覽工具。" if tools
-        else "\n\n不要使用你內建的 shell、檔案、瀏覽工具，直接用文字回答。")
+        ("\n\n要上網搜尋時，用你內建的網頁搜尋。" if native_search else "")
+        + ("\n\n需要讀網頁或存檔時，用 autoworkflow 提供的工具。不要用你內建的 shell、檔案工具。" if names
+           else "\n\n不要使用你內建的 shell、檔案工具。" if native_search
+           else "\n\n不要使用你內建的 shell、檔案、瀏覽工具，直接用文字回答。"))
     cmd = [cli_exe(p), "exec", "--json", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
            "-s", "read-only", "--color", "never",
            # 思考摘要預設是關的（每個 GPT 模型的 default_reasoning_summary 都是 none），不開就看不到它在想什麼
@@ -706,11 +730,11 @@ def chat_codex(p, model, messages, tools, live, timeout=600):
         cmd += ["-c", f'model_reasoning_effort="{p["effort"]}"']
     if model:
         cmd += ["-m", model]
+    cmd += ["-c", 'web_search="live"' if native_search else 'web_search="disabled"']
     # Windows 命令列上限約 32,000 字：系統提示太長就改放在輸入最前面
     long_system = len(system) > 20000
     if not long_system:
         cmd += ["-c", f"developer_instructions={json.dumps(system, ensure_ascii=False)}"]
-    names = [t["function"]["name"] for t in tools or []]
     if names and live.get("run_id"):
         exe, args = _mcp_command()
         env = {"AW_MCP_RUN": str(live["run_id"]), "AW_MCP_SKILLS": ",".join(names),
@@ -727,7 +751,7 @@ def chat_codex(p, model, messages, tools, live, timeout=600):
     live["_proc"] = proc
     killer = threading.Timer(timeout, proc.kill)
     killer.start()
-    text, thinking, usage, err, seen = "", "", {}, None, []
+    text, thinking, usage, err, seen, searching = "", "", {}, None, [], None
     try:
         proc.stdin.write((f"## 系統指示（嚴格遵守）\n{system}\n\n" if long_system else "") + _transcript(messages))
         proc.stdin.close()
@@ -742,7 +766,14 @@ def chat_codex(p, model, messages, tools, live, timeout=600):
             live["last_token"] = time.time()
             if t.startswith("item.") or t in ("turn.failed", "error"):
                 seen.append(f"{t[5:] if t.startswith('item.') else t}:{kind or ''}")
-            if kind == "mcp_tool_call":
+            if kind == "web_search":
+                if t == "item.started":
+                    searching = time.time()
+                    live.update(phase="tool", since=searching, tool={"name": "web_search", "args": "{}"})
+                elif live.get("run_id"):
+                    _record_native_search(live["run_id"], item, int((time.time() - (searching or time.time())) * 1000))
+                    live.update(phase="thinking", since=time.time())
+            elif kind == "mcp_tool_call":
                 if t == "item.started":                # 「現在」那區顯示它正在用哪個工具
                     live.update(phase="tool", since=time.time(), tool={"name": item.get("tool", ""),
                                                                         "args": json.dumps(item.get("arguments") or {}, ensure_ascii=False)})

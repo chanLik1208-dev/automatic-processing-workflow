@@ -122,6 +122,26 @@ def t_mcp_server():
     return "工具清單、權限、次數上限、步驟紀錄都正確"
 
 
+def t_native_search_and_pdf():
+    """GPT 官方搜尋要寫成步驟（包含一次查好幾組關鍵字）；PDF 不能被當成文字直接回傳。"""
+    import json as _j, time as _t
+    rid = engine._exec("INSERT INTO runs (workflow, provider, model, trigger, status, started) VALUES "
+                       "('tech-news','codex','','manual','running',?)", (_t.time(),))
+    engine._record_native_search(rid, {"query": "a ...", "action": {"type": "search", "queries": ["香島中學 投訴", "香島中學 校規"]},
+                                       "results": [{"title": "某頁", "url": "https://x.example/1", "snippet": "摘要"}]}, 1200)
+    engine._record_native_search(rid, {"action": {"type": "other"}, "results": [{"title": "打開的頁", "url": "https://x.example/2"}]}, 800)
+    with engine.db() as c:
+        rows = c.execute("SELECT name, input, output FROM steps WHERE run_id=? ORDER BY idx", (rid,)).fetchall()
+    assert [r[0] for r in rows] == ["web_search", "fetch_url"], rows
+    assert _j.loads(rows[0][1])["query"] == "香島中學 投訴；香島中學 校規", rows[0][1]
+    assert "OpenAI 官方搜尋" in rows[0][2] and "https://x.example/1" in rows[0][2]
+    sys.path.insert(0, str(HOME / "skills"))
+    import fetch_url
+    bad = fetch_url._pdf(b"%PDF-1.5 broken", 1000)
+    assert "PDF" in bad and "%PDF" not in bad, bad            # 讀不出來就說讀不出來，不能把原始內容交給模型
+    return "搜尋和打開網頁都記成步驟；壞掉的 PDF 會明講讀不到"
+
+
 def call(method, path, body=None):
     r = server.call(method, path, body)
     return r["status"], r.get("json")
@@ -298,8 +318,11 @@ def t_search():
     import web_search
     links = web_search._bing_url("https://www.bing.com/ck/a?!&&p=x&u=a1aHR0cHM6Ly9sbXN0dWRpby5haS8&ntb=1")
     assert links == "https://lmstudio.ai/", links                    # Bing 轉址解碼（不需要網路）
+    # Bing 被擋時塞的無關結果要被濾掉，相關的留著（不需要網路）
+    kept = web_search._relevant("天水圍香島中學 投訴", [("Costco 好市多線上購物", "u", ""), ("請問 天水圍的香島中學如何?", "u", "")])
+    assert [k[0] for k in kept] == ["請問 天水圍的香島中學如何?"], kept
     r = web_search.run("LM Studio")
-    if "暫時擋了" in r:
+    if r.startswith("[搜尋被擋]"):
         raise Skip("DuckDuckGo 和 Bing 都擋了這台機器的請求（外部服務，不是程式問題）")
     assert r.count("http") >= 3, r[:200]
     return "有結果（" + r.rsplit("搜尋引擎：", 1)[-1].rstrip("）") + "）"
@@ -421,6 +444,7 @@ def main():
     check("網頁版腳本語法", t_dashboard_js)
     check("臨時換模型 / 刪除紀錄", t_run_override_and_delete)
     check("MCP 伺服器（GPT 用）", t_mcp_server)
+    check("GPT 官方搜尋紀錄 / PDF", t_native_search_and_pdf)
     check("自動模式", t_auto_pick)
     check("排程鎖", t_scheduler_lock)
     check("抓網頁", t_fetch, skip=net)

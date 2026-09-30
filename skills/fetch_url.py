@@ -53,6 +53,27 @@ def _keep(line):
     return len(line) >= 40 or (len(line) >= 12 and SENTENCE.search(line))
 
 
+def _pdf(data, max_chars):
+    """PDF 要先轉成文字；直接當文字解碼只會得到一堆亂碼（%PDF-1.5 ...），模型卻以為讀過了。"""
+    try:
+        import io
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(data))
+        pages, text = len(reader.pages), []
+        for i, page in enumerate(reader.pages[:40]):
+            t = (page.extract_text() or "").strip()
+            if t:
+                text.append(f"［第 {i + 1} 頁］\n{t}")
+            if sum(map(len, text)) > max_chars:
+                break
+    except Exception as e:
+        return f"這是 PDF，但讀不出文字（{type(e).__name__}）。請換一個來源，不要當作已經讀過。"
+    body = "\n".join(text)
+    if not body.strip():
+        return "這是 PDF，但裡面沒有文字（可能是掃描的圖片）。請換一個來源，不要當作已經讀過。"
+    return (f"（PDF，共 {pages} 頁）\n" + body)[:max_chars]
+
+
 def run(url, max_chars=None):
     max_chars = int(max_chars or _cfg("fetch.max_chars", 6000))
     if not url.lower().startswith(("http://", "https://")):
@@ -60,7 +81,14 @@ def run(url, max_chars=None):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Macintosh) ai-workflow"})
     with urllib.request.urlopen(req, timeout=20) as r:
         ctype = r.headers.get("Content-Type", "")
-        raw = r.read().decode(r.headers.get_content_charset() or "utf-8", errors="replace")
+        data = r.read(30 * 1024 * 1024)
+        charset = r.headers.get_content_charset()
+    if "pdf" in ctype.lower() or data[:5] == b"%PDF-":
+        return _pdf(data, max_chars)
+    kind = ctype.split(";")[0].strip().lower()
+    if kind.startswith(("image/", "audio/", "video/", "font/")) or kind in ("application/zip", "application/octet-stream"):
+        return f"這是 {kind} 檔案，不是文字，沒辦法讀內容。請換一個來源，不要當作已經讀過。"
+    raw = data.decode(charset or "utf-8", errors="replace")
     if "html" not in ctype and not raw.lstrip().startswith("<"):
         return raw[:max_chars]          # JSON、純文字等直接回傳
 

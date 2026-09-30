@@ -525,15 +525,33 @@ def to_rounds(steps):
             if not rounds:
                 rounds.append({"llm": None, "acts": []})
             rounds[-1]["acts"].append(s)
+    # 第一個模型步驟之前就有工具：是 codex 在同一次呼叫裡自己邊想邊用的，把它們歸進那次模型呼叫
+    if rounds and not rounds[0]["llm"] and any(a["kind"] == "tool" for a in rounds[0]["acts"]):
+        rounds[0]["embedded"] = True
+        if len(rounds) > 1 and not rounds[1]["acts"]:
+            rounds[0]["llm"] = rounds.pop(1)["llm"]
     return rounds
 
 
+def embedded_ms(steps):
+    """第一個模型步驟之前的工具時間：ChatGPT 訂閱（codex）在同一次呼叫裡自己用的工具，模型那一步的時間包含它們。"""
+    ms = 0
+    for s in steps:
+        if s["kind"] == "llm":
+            break
+        if s["kind"] == "tool":
+            ms += s["ms"] or 0
+    return ms
+
+
 def seg_list(steps, live=None):
-    segs = []
+    segs, emb = [], embedded_ms(steps)
+    first = next((s for s in steps if s["kind"] == "llm"), None)
     for s in steps:
         if s["kind"] == "llm":
             o = parse_args(s["output"])
-            segs.append(("model", max((s["ms"] or 0) / 1000, 0.05), "讀資料、想下一步" if o.get("tool_calls") else "寫結果"))
+            ms = (s["ms"] or 0) - (emb if s is first else 0)          # 扣掉它自己呼叫工具的時間，不重複算
+            segs.append(("model", max(ms / 1000, 0.05), "讀資料、想下一步" if o.get("tool_calls") else "寫結果"))
         elif s["kind"] == "tool":
             err, _ = result_summary(s["name"], s["output"])
             segs.append(("error" if err else "tool", max((s["ms"] or 0) / 1000, 0.05), describe(s["name"], s["input"])[0]))
@@ -565,10 +583,12 @@ def process_html(steps):
     for i, rd in enumerate(to_rounds(steps), 1):
         o = parse_args(rd["llm"]["output"]) if rd["llm"] else {}
         final = rd["llm"] and not o.get("tool_calls")
-        verb = "開始前" if not rd["llm"] else "寫出結果" if final else (
+        verb = ("邊想邊用工具，寫出結果" if rd["llm"] else "模型邊想邊用工具（進行中）") if rd.get("embedded") else \
+            "開始前" if not rd["llm"] else "寫出結果" if final else (
             f"決定做 {len(o['tool_calls'])} 件事" if len(o.get("tool_calls") or []) > 1 else "決定下一步")
         said = re.sub(r"<think>.*?</think>", "", o.get("content") or "", flags=re.S).strip()
-        spent = f"<span style='color:{C('muted')};font-weight:400'>　模型花了 {dur(rd['llm']['ms'] / 1000) or '不到 1 秒'}</span>" if rd["llm"] else ""
+        ms = (rd["llm"]["ms"] or 0) - (embedded_ms(steps) if rd.get("embedded") else 0) if rd["llm"] else 0
+        spent = f"<span style='color:{C('muted')};font-weight:400'>　模型花了 {dur(max(ms, 0) / 1000) or '不到 1 秒'}</span>" if rd["llm"] else ""
         raw = (o.get("raw") or {})
         st = raw.get("stats") or {}
         rawline = (f"<div style='color:{C('muted')};font-size:12px'>模型原始輸出：{esc(st.get('stopReason', ''))}"
@@ -832,8 +852,9 @@ class WorkflowTab(QWidget):
             parts.append(f"<p style='color:{C('muted')}'>你在這裡停止了執行，沒有產出結果。</p>")
         elif r["error"]:
             parts.append(f"<h4 style='color:{C('muted')}'>哪裡出錯</h4><p style='color:{C('bad')}'>{esc(human_error(r['error']))}</p>")
-        total = sum((s["ms"] or 0) for s in d["steps"] if s["kind"] in ("llm", "tool")) / 1000
-        model = sum((s["ms"] or 0) for s in d["steps"] if s["kind"] == "llm") / 1000
+        segs = seg_list(d["steps"])
+        total = sum(x[1] for x in segs)
+        model = sum(x[1] for x in segs if x[0] == "model")
         if total:
             parts.append(f"<h4 style='color:{C('muted')}'>過程</h4><p style='color:{C('muted')}'>"
                          f"模型在讀、在想：{dur(model) or '不到 1 秒'}（{round(model / total * 100)}%）　"

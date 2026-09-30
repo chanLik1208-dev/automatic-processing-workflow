@@ -847,11 +847,19 @@ function placeSelInd(jump) {
 
 // ── 詳情 ───────────────────────────────────────────
 // 把 steps 切成「輪」：每輪 = 一次模型呼叫 + 它決定做的動作
+// 在第一個模型步驟之前就出現的工具步驟：是 ChatGPT 訂閱（codex）在同一次呼叫裡自己邊想邊用的，
+// 模型那一步最後才記錄，而且它的時間包含這些工具的時間
+const embeddedMs = steps => { let ms = 0; for (const s of steps) { if (s.kind === "llm") break; if (s.kind === "tool") ms += s.ms || 0; } return ms; };
 function toRounds(steps) {
   const rounds = [];
   for (const s of steps) {
     if (s.kind === "llm") rounds.push({llm: s, acts: []});
     else (rounds[rounds.length - 1] || (rounds[0] = {llm: null, acts: []})).acts.push(s);
+  }
+  const r0 = rounds[0], r1 = rounds[1];
+  if (r0 && !r0.llm && r0.acts.some(a => a.kind === "tool")) {
+    r0.embedded = true;
+    if (r1 && !r1.acts.length) { r0.llm = r1.llm; rounds.splice(1, 1); }   // 把工具歸進那次模型呼叫
   }
   return rounds;
 }
@@ -862,9 +870,11 @@ function segLabel(s) {
 }
 // 橫向時間條：每段寬度 = 花的時間；夠寬才寫字，滑過去看完整說明
 function timeBar(steps, live) {
+  const emb = embeddedMs(steps), firstLlm = steps.find(s => s.kind === "llm");
   const segs = steps.filter(s => s.kind === "llm" || s.kind === "tool" || (s.kind === "error" && s.ms)).map(s => ({
     cls: s.kind === "llm" ? "model" : s.kind === "tool" ? (resultSummary(s.name, s.output).err ? "error" : "tool") : "error",
-    sec: Math.max((s.ms || 0) / 1000, 0.05), label: segLabel(s),
+    // 模型那一步的時間包含了它自己呼叫工具的時間：扣掉，才不會重複算
+    sec: Math.max(((s.ms || 0) - (s === firstLlm ? emb : 0)) / 1000, 0.05), label: segLabel(s),
     tip: s.kind === "tool" ? describe(s.name, s.input).filter(Boolean).join("：") : segLabel(s)}));
   if (live) segs.push({cls: (live.tool ? "tool" : "model") + " now", sec: Math.max(live.sec, 0.05), label: live.label, tip: live.label + "（進行中）"});
   const total = segs.reduce((a, b) => a + b.sec, 0) || 1;
@@ -920,9 +930,11 @@ function timeline(steps) {
     const o = rd.llm ? parseArgs(rd.llm.output) : {};
     const said = (o.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
     const final = rd.llm && !(o.tool_calls || []).length;
-    const verb = !rd.llm ? "" : final ? "寫出結果" : (o.tool_calls || []).length > 1 ? `決定做 ${o.tool_calls.length} 件事` : "決定下一步";
+    const verb = rd.embedded ? (rd.llm ? "邊想邊用工具，寫出結果" : "模型邊想邊用工具（進行中）")
+      : !rd.llm ? "" : final ? "寫出結果" : (o.tool_calls || []).length > 1 ? `決定做 ${o.tool_calls.length} 件事` : "決定下一步";
+    const spent = rd.llm ? Math.max(rd.llm.ms - (rd.embedded ? embeddedMs(steps) : 0), 0) : 0;
     return `<div class="round">
-      <div class="rh"><span class="rn">${i + 1}</span><span class="rt">${verb || "開始前"}${rd.llm ? `<small>模型花了 ${dur(rd.llm.ms / 1000) || "不到 1 秒"}</small>` : ""}</span></div>
+      <div class="rh"><span class="rn">${i + 1}</span><span class="rt">${verb || "開始前"}${rd.llm ? `<small>模型花了 ${dur(spent / 1000) || "不到 1 秒"}</small>` : ""}</span></div>
       ${said && !final ? `<div class="said">${esc(said.slice(0, 240))}${said.length > 240 ? "…" : ""}</div>` : ""}
       ${rd.acts.length ? `<div class="acts">${rd.acts.map(a => actRow(a, true)).join("")}</div>` : ""}
       ${rd.llm ? rawBlock(o.raw, o.content) : ""}
