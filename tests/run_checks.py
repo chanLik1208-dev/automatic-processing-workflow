@@ -390,7 +390,16 @@ def t_gemini_agy():
     m = r["choices"][0]["message"]
     assert m["tool_calls"][0]["function"]["name"] == "web_search" and not m.get("content"), m
     assert "【重要】" in _j.loads((HOME / "agy-input.txt").read_text(encoding="utf-8"))["message"]["content"]
-    return "舊設定換成 agy；從標準輸入送出；解析工具呼叫；格式錯誤時自動加強提醒重試"
+    img = HOME / "agy-pic.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 16)
+    (HOME / "agy-tried").unlink(missing_ok=True)
+    fake.write_text("#!/bin/sh\nd=\"$(dirname \"$0\")\"\ncat > \"$d/agy-input.txt\"\nls \"$PWD\" > \"$d/agy-cwd.txt\"\n"
+                    f"echo '{_j.dumps(ok, ensure_ascii=False)}'\n")
+    engine.chat_cli(p, "", [{"role": "system", "content": "SYS"}, {"role": "user", "content": "看圖"}], tools, {"_images": [str(img)]})
+    sent = _j.loads((HOME / "agy-input.txt").read_text(encoding="utf-8"))["message"]["content"]
+    assert "## 圖片" in sent and "view_file" in sent, sent[-300:]
+    assert "image-1.png" in (HOME / "agy-cwd.txt").read_text(), "圖片要複製到 agy 的工作資料夾"
+    return "舊設定換成 agy；從標準輸入送出；解析工具呼叫；格式錯誤時自動重試；圖片複製到工作資料夾給 view_file 開"
 
 
 def t_browser_read():
@@ -556,6 +565,81 @@ def t_attach_continue():
     return "圖片送到模型、資料夾只讀得到裡面、繼續沿用對話、重新生成照原本的輸入和附件"
 
 
+def t_web_images():
+    """網頁上的圖片：fetch_url 列出正文圖片（跳過 logo、追蹤點）→ 模型用 view_image 挑一張 → 圖片真的送到模型；每次最多 6 張。"""
+    import base64 as _b64, http.server, json as _j, re as _re, socketserver
+    png = _b64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+    page = ('<!doctype html><html><head><meta charset="utf-8"><title>商品</title></head><body><article>'
+            '<p>這件外套買家反映尺寸偏小，建議買大一號，洗後可能縮水。</p><img src="/logo.png" alt="logo">'
+            '<img src="/pixel.gif" width="1" height="1"><img data-src="/coat.png" src="data:image/gif;base64,R0l" alt="買家實拍">'
+            '<p>第二段：顏色跟賣家圖片差很多，實物偏暗。</p></article></body></html>')
+
+    class Site(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            body, ctype = (png, "image/png") if self.path.endswith(".png") else (page.encode(), "text/html; charset=utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.end_headers()
+            self.wfile.write(body)
+    site = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Site)
+    threading.Thread(target=site.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{site.server_address[1]}"
+    reqs = []
+
+    class Model(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            body = _j.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            reqs.append(body)
+            outs = [m["content"] for m in body["messages"] if m.get("role") == "tool"]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            send = lambda d: self.wfile.write(f"data: {_j.dumps(d, ensure_ascii=False)}\n\n".encode())
+            call = lambda n, a: send({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": f"c{len(reqs)}",
+                                                                              "function": {"name": n, "arguments": _j.dumps(a)}}]}}]})
+            if not outs:
+                call("fetch_url", {"url": base + "/item.html"})
+            elif len(outs) == 1:
+                call("view_image", {"url": _re.search(r"— (http\S+)", outs[0]).group(1)})
+            else:
+                send({"choices": [{"delta": {"content": "看完了"}, "finish_reason": "stop"}]})
+            self.wfile.write(b"data: [DONE]\n\n")
+    model = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Model)
+    threading.Thread(target=model.serve_forever, daemon=True).start()
+    raw = _j.loads((HOME / "config.json").read_text(encoding="utf-8"))
+    raw["providers"]["fakeimg"] = {"label": "假模型", "base_url": f"http://127.0.0.1:{model.server_address[1]}/v1",
+                                   "api_key": "x", "default_model": "fake"}
+    raw.setdefault("lmstudio_guard", {}).update(nan_watchdog=False, raw_capture=False)
+    (HOME / "config.json").write_text(_j.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    try:
+        engine.save_workflow("img-check", {"title": "看圖檢查", "task": "看商品頁", "provider": "fakeimg",
+                                           "skills": ["fetch_url"], "schedule": {}}, create=True)
+        rid = engine.run_workflow("img-check", "manual", "")
+        with engine.db() as c:
+            st = c.execute("SELECT status FROM runs WHERE id=?", (rid,)).fetchone()[0]
+            fetched = c.execute("SELECT output FROM steps WHERE run_id=? AND name='fetch_url'", (rid,)).fetchone()[0]
+        assert st == "success", st
+        assert "view_image" in [t["function"]["name"] for t in reqs[0]["tools"]], "有 fetch_url 就要自動給 view_image"
+        assert base + "/coat.png" in fetched and "logo.png" not in fetched and "pixel.gif" not in fetched, fetched
+        last = reqs[-1]["messages"]
+        assert [m["role"] for m in last][-2:] == ["tool", "user"], [m["role"] for m in last]
+        assert isinstance(last[-1]["content"], list) and last[-1]["content"][1]["image_url"]["url"].startswith("data:image/png"), \
+            "view_image 取回的圖片沒有送到模型"
+        viewed = ["x"] * engine.VIEW_IMAGE_MAX
+        text, img = engine.take_image(engine.IMAGE_MARK + "/p.png\nhttp://a/b.png\n1 bytes", viewed)
+        assert img is None and "上限" in text, text
+    finally:
+        site.shutdown()
+        model.shutdown()
+    return "列出正文圖片、跳過 logo / 追蹤點；view_image 取回的圖片送到模型；每次最多 6 張"
+
+
 def t_update():
     import updater
     assert updater._ver("0.10.0") > updater._ver("0.9.9") > updater._ver("0.2.1"), "版本比較錯誤"
@@ -681,6 +765,7 @@ def main():
     check("用我的瀏覽器讀網頁", t_browser_read)
     check("搜尋被擋改用瀏覽器", t_search_browser_fallback)
     check("附件 / 繼續 / 重新生成", t_attach_continue)
+    check("網頁圖片給模型看", t_web_images)
     check("搜尋", t_search, skip=net)
     check("匯出 Word / PDF", t_export)
     check("檢查更新", t_update, skip=net)

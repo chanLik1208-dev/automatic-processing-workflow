@@ -1,4 +1,4 @@
-import html, json, os, pathlib, re, shutil, subprocess, sys, threading, time, urllib.error, urllib.request
+import html, json, os, pathlib, re, shutil, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request
 from html.parser import HTMLParser
 
 SPEC = {
@@ -257,7 +257,7 @@ def run(url, max_chars=None):
     dom, err = _browser_dom(url)
     if err:
         return out + f"\n（也試了用你的瀏覽器讀：{err}）"
-    got = _from_html(dom, max_chars)
+    got = _from_html(dom, max_chars, url)
     if got.startswith(NO_TEXT):
         return got.replace("這類頁面通常要執行 JavaScript 才會出現內容", "用你的瀏覽器讀也沒有正文（可能要登入、被驗證擋住，或內容要點擊才出現）")
     return ("（用你登入的瀏覽器讀取）\n" + got)[:max_chars]
@@ -277,10 +277,39 @@ def _fetch(url, max_chars):
     raw = data.decode(charset or "utf-8", errors="replace")
     if "html" not in ctype and not raw.lstrip().startswith("<"):
         return raw[:max_chars]          # JSON、純文字等直接回傳
-    return _from_html(raw, max_chars)
+    return _from_html(raw, max_chars, url)
 
 
-def _from_html(raw, max_chars):
+IMG_SKIP = re.compile(r"logo|icon|avatar|sprite|pixel|spacer|blank|emoji|badge|tracking|beacon|/ads?/|banner|placeholder|loading", re.I)
+
+
+def _images(fragment, base, limit=12):
+    """正文裡的圖片（網址 + 說明），給模型挑著用 view_image 看。跳過圖示、logo、追蹤用的小圖、base64 內嵌圖。"""
+    out, seen = [], set()
+    for tag in re.findall(r"<img\b[^>]*>", fragment, re.I):
+        attrs = dict((k.lower(), html.unescape(v)) for k, _, v in re.findall(r'([\w:-]+)\s*=\s*(["\'])(.*?)\2', tag, re.S))
+        src = attrs.get("data-src") or attrs.get("data-original") or attrs.get("data-lazy-src") or attrs.get("src") or ""
+        if not src and attrs.get("srcset"):
+            src = attrs["srcset"].split(",")[0].strip().split(" ")[0]
+        src = src.strip()
+        if not src or src.startswith("data:") or src.lower().split("?")[0].endswith(".svg") or IMG_SKIP.search(src):
+            continue
+        try:
+            if any(int(re.sub(r"\D", "", attrs.get(k, "999") or "999") or 999) < 80 for k in ("width", "height")):
+                continue                                    # 太小的多半是圖示或追蹤點
+        except ValueError:
+            pass
+        full = urllib.parse.urljoin(base, src) if base else src
+        if full in seen or not full.lower().startswith(("http://", "https://")):
+            continue
+        seen.add(full)
+        out.append((re.sub(r"\s+", " ", attrs.get("alt") or attrs.get("title") or "").strip()[:80], full))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _from_html(raw, max_chars, url=""):
     raw, hidden = _visible_only(raw)
 
     title = _meta(raw, "og:title", "twitter:title")
@@ -316,4 +345,7 @@ def _from_html(raw, max_chars):
             f"摘要：{desc}" if desc and desc.rstrip(".…")[:40] not in text else "",
             f"（已略過 {hidden} 個一般人看不到的區塊）" if hidden else ""]
     out = "\n".join(h for h in head if h)
-    return (out + "\n---\n" + text if out else text)[:max_chars]
+    pics = _images(body, url)
+    tail = ("\n\n圖片（跟任務有關時可以用 view_image 看，不要每張都看）：\n" +
+            "\n".join(f"{i}. {alt or '（沒有說明）'} — {src}" for i, (alt, src) in enumerate(pics, 1))) if pics else ""
+    return (out + "\n---\n" + text if out else text)[:max(max_chars - len(tail), 500)] + tail
