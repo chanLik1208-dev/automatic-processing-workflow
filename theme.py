@@ -1,7 +1,9 @@
 """Qt 版的外觀：跟網頁版（dashboard.html）同一組色票和元件樣式，三個平台長得一樣。"""
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, QVariantAnimation
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPalette, QPen
-from PySide6.QtWidgets import QApplication, QStyle, QStyledItemDelegate, QStyleFactory, QWidget
+import os, tempfile
+
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPalette, QPen
+from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QStyle, QStyledItemDelegate, QStyleFactory, QWidget
 
 # 跟 dashboard.html 的 :root 一樣
 LIGHT = dict(bg="#f5f4f0", panel="#ffffff", ink="#1c1c1a", soft="#4a4a45", muted="#85857d", line="#e4e2dc",
@@ -35,6 +37,39 @@ def apply(app):
         pal.setColor(role, QColor(T[key]))
     app.setPalette(pal)
     app.setStyleSheet(stylesheet())
+    if not getattr(app, "_combo_click", None):
+        app._combo_click = ComboClickOpens(app)
+        app.installEventFilter(app._combo_click)
+
+
+def _arrow_png(color):
+    """下拉箭頭。樣式表一改 QComboBox，Qt 就不畫原生箭頭了，要自己給一張圖；
+    用 QPainter 畫成 PNG（不靠 SVG 外掛，打包後也一定讀得到）。"""
+    path = os.path.join(tempfile.gettempdir(), f"autoworkflow-arrow-{color.lstrip('#')}.png")
+    if not os.path.exists(path):
+        img = QImage(20, 20, QImage.Format_ARGB32)
+        img.fill(Qt.transparent)
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(color), 2.4, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        chev = QPainterPath(QPointF(5, 8))
+        chev.lineTo(10, 13)
+        chev.lineTo(15, 8)
+        p.drawPath(chev)
+        p.end()
+        img.save(path, "PNG")
+    return path.replace("\\", "/")
+
+
+class ComboClickOpens(QObject):
+    """可以打字的下拉選單（模型欄位）：點文字區也打開清單，不然只有點箭頭才會出現，看起來像普通輸入框。"""
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.MouseButtonRelease and isinstance(obj, QLineEdit):
+            combo = obj.parent()
+            if isinstance(combo, QComboBox) and combo.isEditable() and combo.count() and not combo.view().isVisible():
+                QTimer.singleShot(0, combo.showPopup)
+        return False
 
 
 def stylesheet():
@@ -74,7 +109,9 @@ def stylesheet():
         selection-color:{t['accent_ink']}; }}
     QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBox:focus {{ border:1px solid {t['run']}; }}
     QComboBox#picker {{ background:{t['run_tint']}; border:none; font-weight:600; font-size:15px; padding:7px 12px; }}
-    QComboBox::drop-down {{ border:none; width:22px; }}
+    QComboBox::drop-down {{ border:none; width:24px; }}
+    QComboBox::down-arrow {{ image:url("{_arrow_png(t['muted'])}"); width:12px; height:12px; }}
+    QComboBox::down-arrow:on {{ top:1px; }}
     QComboBox QAbstractItemView {{ background:{t['elev']}; border:1px solid {t['line']}; border-radius:8px;
         padding:4px; selection-background-color:{t['tint']}; selection-color:{t['ink']}; outline:none; }}
     QSpinBox::up-button, QSpinBox::down-button {{ border:none; width:16px; }}

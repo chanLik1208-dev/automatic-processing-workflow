@@ -44,6 +44,10 @@ else:
     cmd += ["--onefile", "--console", "--name", "AutoWorkflow" if os_name == "linux" else full]
 for src, dst in data:
     cmd += ["--add-data", f"{ROOT / src}:{dst}"]
+# 介面模組是在執行時才用名字載入的（app.py 的 __import__），PyInstaller 看不到：不寫明就不會打包，
+# 結果 WebView 版在每台電腦上都「No module named 'native'」，默默改開 Qt 版
+for mod in ("native", "qt_app", "mcp_skills"):
+    cmd += ["--hidden-import", mod]
 cmd.append(str(ROOT / "app.py"))
 subprocess.run(cmd, check=True)
 

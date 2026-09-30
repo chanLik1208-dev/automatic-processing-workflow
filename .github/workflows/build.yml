@@ -1,6 +1,9 @@
 name: build
 
-# 推 v* 標籤：四個平台各自編譯、實際啟動測一次；全部成功才把 release 公開（之前一直是草稿，不會出現空的 release）
+# 合併到 main、而且 version.py 的版本還沒發佈過：自動發佈 v<版本>（不用手動打標籤）。
+#   四個平台各自編譯、實際啟動測一次；全部成功才把 release 公開，標籤也在公開時才建立（之前一直是草稿，不會出現空的 release）。
+#   版本號沒變的合併（只改文件之類）不會發佈。
+# 推 v* 標籤：跟以前一樣，手動發佈那個版本。
 # 推到 release-check 分支（或手動觸發）：一樣編譯和測試，但放進「草稿」release，不公開發佈
 #
 # 執行檔直接上傳到 Releases，不用 Actions 的 artifact：私人 repo 的 artifact 儲存配額很容易用完，
@@ -8,7 +11,7 @@ name: build
 on:
   push:
     tags: ["v*"]
-    branches: ["release-check"]
+    branches: ["release-check", "main"]
   workflow_dispatch:
 
 permissions:
@@ -19,28 +22,51 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.t.outputs.tag }}
+      release: ${{ steps.t.outputs.release }}     # true：正式版（成功就公開）；false：測試草稿
+      skip: ${{ steps.t.outputs.skip }}           # true：main 上這個版本已經發佈過，不用編譯
     steps:
       - id: t
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          RELEASE=false SKIP=false
+          if [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            # 合併到 main：版本號是新的才發佈。
+            # （Actions 自己建立的標籤不會再觸發另一個 Actions，所以不能「先打標籤、讓標籤觸發編譯」，要在這裡直接做）
+            VER=$(curl -sf -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
+              "https://api.github.com/repos/$GH_REPO/contents/version.py?ref=$GITHUB_SHA" | sed -n 's/^VERSION = "\(.*\)"/\1/p')
+            [ -n "$VER" ] || { echo "讀不到 version.py 的版本"; exit 1; }
+            TAG="v$VER"
+            if gh api "repos/$GH_REPO/git/ref/tags/$TAG" > /dev/null 2>&1; then
+              echo "$TAG 已經發佈過（版本號沒變），這次合併不發佈"
+              SKIP=true
+            else
+              # 上次同版本編譯失敗留下的草稿先刪掉再重來（草稿還沒有標籤，刪掉不影響任何東西）
+              if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null)" = "true" ]; then
+                gh release delete "$TAG" --yes
+              fi
+              gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "$TAG" --generate-notes
+              RELEASE=true
+            fi
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF_NAME}"
             # 程式裡的版本號要跟標籤一致，否則更新檢查會一直以為有新版
             curl -sf -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
               "https://api.github.com/repos/$GH_REPO/contents/version.py?ref=$GITHUB_SHA" | grep -q "VERSION = \"${TAG#v}\"" \
               || { echo "version.py 的版本跟標籤 $TAG 不一致"; exit 1; }
             gh release create "$TAG" --draft --title "$TAG" --generate-notes --verify-tag
+            RELEASE=true
           else
             TAG="check-${GITHUB_RUN_NUMBER}"
             gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "測試編譯 #${GITHUB_RUN_NUMBER}（${GITHUB_REF_NAME}）" \
               --notes "release-check 分支的測試編譯，草稿，不公開。commit ${GITHUB_SHA}"
           fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          { echo "tag=$TAG"; echo "release=$RELEASE"; echo "skip=$SKIP"; } >> "$GITHUB_OUTPUT"
 
   build:
     needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -106,8 +132,12 @@ jobs:
           AUTOWORKFLOW_HOME="$RUNNER_TEMP/ui-home" "$(cat dist/test-bin.txt)" --self-test-ui "$RUNNER_TEMP/ui"
           cd "$RUNNER_TEMP/ui" && for f in *.png; do mv "$f" "ui-${{ matrix.os }}-$f"; done && ls
 
+      - name: 介面模組都有打包（放在 Qt 自我測試之後：Linux 要先裝好 Qt 需要的系統函式庫；之前 WebView 模組沒打包進去，每台電腦都默默改開 Qt 版）
+        shell: bash
+        run: '"$(cat dist/test-bin.txt)" --check-ui'
+
       - name: 截圖放進測試草稿（正式版不放）
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        if: needs.prepare.outputs.release != 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -121,7 +151,7 @@ jobs:
 
   publish:
     # 四個平台都編譯、測試、上傳成功，才把正式版的草稿公開；任何一個失敗就維持草稿
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: needs.prepare.outputs.release == 'true'
     needs: [prepare, build]
     runs-on: ubuntu-latest
     steps:
