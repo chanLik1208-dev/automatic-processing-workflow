@@ -186,6 +186,16 @@ class Api:
                 return self.send({"ok": True, "moved_reports": engine.delete_run(int(parts[2]))})
             except ValueError as e:
                 return self.send({"error": str(e)}, 409)
+        if parts == ["api", "browser", "login"]:
+            # 「用我的瀏覽器讀網頁」用的專用瀏覽器資料夾（skills/fetch_url.py 讀網頁時用同一個）
+            browser = find_browser()
+            if not browser:
+                return self.send({"error": "找不到 Chrome / Edge；可以在「PDF 用的瀏覽器」填路徑"}, 400)
+            profile = engine.ROOT / "browser-profile"
+            profile.mkdir(parents=True, exist_ok=True)
+            subprocess.Popen([browser, f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check",
+                              "about:blank"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return self.send({"ok": True})
         if parts == ["api", "export"]:
             fmt, html = body.get("format"), body.get("html") or ""
             if fmt not in ("docx", "pdf") or not html or len(html) > 5_000_000:
