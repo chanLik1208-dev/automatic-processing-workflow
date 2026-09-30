@@ -31,7 +31,8 @@ Windows `%APPDATA%\AutoWorkflow`、Linux `~/.local/share/autoworkflow`（可用�
 
 - **LM Studio**（本機，免費）：開啟 LM Studio、載入一個模型、在 Developer 分頁啟動 server
 - **Claude 訂閱**（Pro / Max，不需 API key）：安裝 Claude Code 並登入一次；沒裝時監控頁會顯示安裝指令
-- **ChatGPT / Gemini 訂閱**：監控頁會顯示 Codex CLI / Gemini CLI 的安裝方法（串接尚未完成）
+- **ChatGPT 訂閱**：安裝 Codex CLI 並登入一次；沒裝時監控頁會顯示安裝指令
+- **Gemini 訂閱**（Google AI Pro / Ultra 或免費帳號）：安裝 Antigravity CLI（`agy`）並登入一次。Google 已在 2026-06-18 停止 Gemini CLI 的個人帳號登入，所以改用 `agy`
 - **DeepSeek API**：設定環境變數 `DEEPSEEK_API_KEY`
 
 自己編譯：`pip install pyinstaller && python build.py`（Python 3.13 以上；在哪個平台跑就產生哪個平台的版本）。
