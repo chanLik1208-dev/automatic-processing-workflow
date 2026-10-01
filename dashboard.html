@@ -1235,10 +1235,10 @@ function renderDetail(d) {
   const contBox = !done ? "" : `<div class="section">接著做</div><div class="cont">
       <textarea placeholder="${r.can_continue ? "接著問、要求修改或補充…（Ctrl/⌘+Enter＝繼續）" : "新的指示（可以留空）"}">${esc(keepCont)}</textarea>
       ${r.can_continue ? "" : `<div class="muted">這筆是舊版跑的，沒有保存對話內容，不能接著繼續；可以重新對話或重新生成。</div>`}
-      <div class="row2">${r.can_continue ? `<button data-cont="${r.id}">繼續</button>` : ""}<button class="ghost" data-redo="${r.id}">重新對話</button><button class="ghost" data-regen="${r.id}">重新生成</button></div>
-      <div class="muted" style="font-size:12.5px;line-height:1.6;margin-top:6px">繼續：接著同一段對話，加上框裡的新輸入。
-        重新對話：帶著這次的過程和結果當參考，從頭重新跑一次工作流（框裡的字當新指示，可以留空）。
-        重新生成：同樣的輸入和設定，再跑一次。附件、模型用上方執行列的「＋ 附件」「模型」。</div></div>`;
+      ${r.can_continue ? `<div class="row2"><button data-cont="${r.id}">繼續</button></div>` : ""}
+      <div class="muted" style="font-size:12.5px;line-height:1.6;margin-top:6px">${r.can_continue ? "繼續：接著同一段對話，加上框裡的新輸入。" : ""}
+        上方的「重新對話」會帶著這次的過程和結果，從頭重新跑一次工作流（框裡有字就當新指示）；「重新生成」用同樣的輸入和設定再跑一次。
+        附件、模型用最上方執行列的「＋ 附件」「模型」。</div></div>`;
   $("#detail").innerHTML = `
     <div class="dhead"><p class="t">${esc(wfTitle(r.workflow))} <span class="${st[1]}-text" style="font-size:15px">${st[0]}</span></p>
       ${r.status === "running" ? "" : `<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">${done ? `${r.can_continue ? `<button data-cont-jump>繼續…</button>` : ""}<button class="ghost" data-redo="${r.id}" title="帶著這次的過程和結果，從頭重新跑一次工作流">重新對話</button><button class="ghost" data-regen="${r.id}" title="同樣的輸入和設定，再跑一次">重新生成</button>` : ""}<button class="ghost" data-run-del="${r.id}" style="color:var(--bad)">刪除</button><div class="dd"><button class="ghost" data-toggle="export-menu">匯出 ▾</button>
