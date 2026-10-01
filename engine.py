@@ -1396,11 +1396,19 @@ VIEW_IMAGE_MAX = 6
 IMAGE_MARK = "[[AW_IMAGE]]"           # skills/view_image.py 回傳的開頭
 
 
-def take_image(result, viewed):
-    """view_image 的結果 → (給模型和紀錄看的文字, (圖片路徑, 網址) 或 None)。超過上限就不給圖。"""
-    if not isinstance(result, str) or not result.startswith(IMAGE_MARK):
+def take_image(fn, result, viewed):
+    """view_image 的結果 → (給模型和紀錄看的文字, (圖片路徑, 網址) 或 None)。超過上限就不給圖。
+    只認 view_image 自己存在 uploads/web 的圖片：其他工具的輸出（例如 fetch_url 原樣回傳的網頁文字）
+    就算以同樣的標記開頭，也只是文字，不能讓網頁指定一個本機檔案送給模型。"""
+    if fn != "view_image" or not isinstance(result, str) or not result.startswith(IMAGE_MARK):
         return result, None
     path, url, *rest = result[len(IMAGE_MARK):].split("\n") + ["", ""]
+    folder = os.path.realpath(ROOT / "uploads" / "web")
+    real = os.path.realpath(path)
+    if (not real.startswith(folder + os.sep) or pathlib.Path(real).suffix.lower() not in IMAGE_TYPES
+            or not os.path.isfile(real)):
+        return "[skill 錯誤] view_image 回傳的圖片路徑不對，這張不看。", None
+    path = real
     if len(viewed) >= VIEW_IMAGE_MAX:
         return f"[skill 錯誤] 這次執行已經看了 {VIEW_IMAGE_MAX} 張圖片，達到上限；用目前看過的資料繼續。", None
     return f"已取回圖片：{url}（{rest[0]}），附在下一則訊息給你看。", (path, url)
@@ -1585,7 +1593,7 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
                 t0 = time.time()
                 live.update(phase="tool", since=t0, tool={"name": fn, "args": call["function"].get("arguments")})
                 result = exec_tool(skills, allowed, fn, call["function"].get("arguments"))
-                result, img = take_image(result, viewed)
+                result, img = take_image(fn, result, viewed)
                 if img:
                     fetched.append(img)
                     viewed.append(img[0])

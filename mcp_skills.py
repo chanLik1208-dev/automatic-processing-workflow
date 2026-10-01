@@ -55,7 +55,7 @@ def serve():
             else:
                 t0 = time.time()
                 text = engine.exec_tool(skills, allowed, fn, args)
-                text, img = engine.take_image(text, viewed)
+                text, img = engine.take_image(fn, text, viewed)
                 if img:
                     # codex 不會把 MCP 工具回傳的圖片交給 GPT（openai/codex#4819，只顯示 <image content>）；
                     # 它自己的 view_image 會（實測送出 input_image）。所以給路徑，請它用內建的 view_image 打開
