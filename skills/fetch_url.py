@@ -37,6 +37,14 @@ def _cfg(path, default):
         return default
 
 
+def _browser_on():
+    """設定裡打開了「用我的瀏覽器讀網頁」，而且這個工作流被允許用（權限）。"""
+    if not _cfg("browser.enabled", False):
+        return False
+    eng = sys.modules.get("engine")
+    return eng.run_permission("browser") if eng and hasattr(eng, "run_permission") else True
+
+
 def _meta(page, *names):
     for n in names:
         m = re.search(rf'<meta[^>]+(?:property|name)=["\']{re.escape(n)}["\'][^>]*content=["\']([^"\']+)', page, re.I) \
@@ -244,7 +252,7 @@ def run(url, max_chars=None):
     max_chars = int(max_chars or _cfg("fetch.max_chars", 6000))
     if not url.lower().startswith(("http://", "https://")):
         return "只接受 http:// 或 https:// 網址"
-    use_browser = bool(_cfg("browser.enabled", False))
+    use_browser = _browser_on()
     try:
         out = _fetch(url, max_chars)
     except urllib.error.HTTPError as e:

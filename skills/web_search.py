@@ -1,4 +1,4 @@
-import base64, html, http.cookiejar, importlib.util, json, pathlib, random, re, threading, time, urllib.parse, urllib.request
+import base64, html, http.cookiejar, importlib.util, json, pathlib, random, re, sys, threading, time, urllib.parse, urllib.request
 
 SPEC = {
     "name": "web_search",
@@ -19,6 +19,14 @@ def _cfg(path, default):
         return cur
     except (OSError, ValueError, KeyError, TypeError):
         return default
+
+
+def _browser_on():
+    """設定裡打開了「用我的瀏覽器讀網頁」，而且這個工作流被允許用（權限）。"""
+    if not _cfg("browser.enabled", False):
+        return False
+    eng = sys.modules.get("engine")
+    return eng.run_permission("browser") if eng and hasattr(eng, "run_permission") else True
 
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
@@ -191,7 +199,7 @@ def run(query, limit=None):
         _pace["last"] = time.time()
         results, engine, blocked = _search(query, limit)
     browser_err = ""
-    if not results and blocked and _cfg("browser.enabled", False):
+    if not results and blocked and _browser_on():
         try:
             results, engine = _search_browser(query, limit)
         except Blocked:
@@ -203,7 +211,9 @@ def run(query, limit=None):
         return (f"[搜尋被擋] {'、'.join(blocked)} 把這次搜尋當成機器人擋了，這不代表沒有相關資料。"
                 "不要據此下「查無資料」的結論；可以改用已知的網址直接讀，或在報告裡註明搜尋受阻。"
                 + (f"（也試了用使用者的瀏覽器搜尋：{browser_err}）" if browser_err
-                   else "" if _cfg("browser.enabled", False) else
+                   else "" if _browser_on() else
+                   "（提示使用者：這個工作流沒有被允許「用你的瀏覽器讀網頁」，可以在工作流的權限裡允許）"
+                   if _cfg("browser.enabled", False) else
                    "（提示使用者：設定頁打開「用我的瀏覽器讀網頁」後，被擋時會改用使用者自己的瀏覽器搜尋）"))
     if not results:
         return f"搜尋「{query}」沒有結果"

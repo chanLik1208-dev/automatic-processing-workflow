@@ -124,6 +124,24 @@ def _progress(run_id, quiet):
         time.sleep(0.5)
 
 
+def ask_permissions(name, wf):
+    """工作流有還沒問過的權限：在終端機裡問（跟視窗版的詢問一樣）；不是互動式終端機就不問，那些功能這次不用。"""
+    miss = engine.missing_permissions(name, wf)
+    if not miss:
+        return
+    if not sys.stdin.isatty():
+        print("這個工作流有還沒允許過的功能，這次不使用：" + "、".join(i["label"] for i in miss) +
+              "（在視窗版工作流的「⋯ → 權限…」允許，或在終端機直接執行時回答）", file=sys.stderr)
+        return
+    print(f"「{wf.get('title', name)}」想要使用這些功能（之後可以在視窗版工作流的「⋯ → 權限…」改）：", file=sys.stderr)
+    got = {}
+    for i in miss:
+        ans = input(f"  {i['label']}：{i['detail']}\n  允許嗎？[y/N] ").strip().lower()
+        got[i["key"]] = "allow" if ans in ("y", "yes", "是", "好") else "deny"
+    for n in engine.set_permissions(name, got):
+        print(n["text"], file=sys.stderr)
+
+
 def cmd_run(args):
     engine.init_db()
     if args.skill:
@@ -139,6 +157,7 @@ def cmd_run(args):
             wf["provider"] = args.provider
         if args.model:
             wf["model"] = args.model
+    ask_permissions(name, wf)
     result = {}
     t = threading.Thread(target=lambda: result.update(id=engine.run_workflow(name, "cli", args.input or "", wf, args.depth)), daemon=True)
     t.start()

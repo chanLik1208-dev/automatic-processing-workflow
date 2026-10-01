@@ -15,9 +15,9 @@ import webbrowser
 from PySide6.QtCore import (QEasingCurve, QObject, QPropertyAnimation, QRectF, QRunnable, Qt, QThreadPool, QTimer,
                             Signal, Slot)
 from PySide6.QtGui import QAction, QColor, QFont, QPainter, QPalette
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
                                QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
+                               QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QScrollArea,
                                QSizePolicy, QSlider, QSpinBox, QSplitter, QStackedWidget, QTabWidget, QTextBrowser, QToolButton,
                                QVBoxLayout, QWidget, QWidgetAction)
 
@@ -194,6 +194,117 @@ ACCENT = "#CCCCFF"
 
 def C(role):
     return theme.T[role]
+
+
+# ---------------------------------------------------------------- 權限（像 macOS 的 app 權限）
+PANE_TEXT = {"files": "打開「檔案與資料夾」設定", "full_disk": "打開「完整磁碟取用權限」設定", "notifications": "打開「通知」設定"}
+
+
+class PermissionDialog(QDialog):
+    """工作流第一次要用敏感功能時的詢問（manage=True 是從選單打開來改）。"""
+
+    def __init__(self, parent, title, items, manage=False):
+        super().__init__(parent)
+        self.setWindowTitle(f"「{title}」的權限" if manage else "要求權限")
+        self.setMinimumWidth(460)
+        v = QVBoxLayout(self)
+        v.addWidget(label(f"「{title}」的權限" if manage else f"「{title}」想要使用這些功能", bold=True, size=15))
+        if not manage:
+            v.addWidget(label("第一次用到才會問；之後可以在工作流的「⋯ → 權限…」改。排程執行時不會問，沒允許的功能那次就不用。",
+                              "muted", size=12))
+        self.groups = {}
+        for it in items:
+            box = QFrame()
+            bv = QVBoxLayout(box)
+            bv.setContentsMargins(0, 8, 0, 8)
+            bv.addWidget(label(it["label"], bold=True))
+            bv.addWidget(label(it["detail"], "muted", size=12))
+            row = QHBoxLayout()
+            allow, deny = QRadioButton("允許"), QRadioButton("不允許")
+            (deny if it.get("state") == "deny" else allow).setChecked(True)
+            grp = QButtonGroup(box)
+            grp.addButton(allow)
+            grp.addButton(deny)
+            row.addWidget(allow)
+            row.addWidget(deny)
+            if manage and not it.get("state"):
+                row.addWidget(label("（還沒問過）", "muted", size=12))
+            row.addStretch(1)
+            bv.addLayout(row)
+            v.addWidget(box)
+            self.groups[it["key"]] = allow
+        if not items:
+            v.addWidget(label("這條工作流沒有用到需要權限的功能。", "muted"))
+        bb = QDialogButtonBox()
+        if items:
+            bb.addButton("儲存" if manage else "確定並執行", QDialogButtonBox.AcceptRole)
+        bb.addButton("取消" if items else "關閉", QDialogButtonBox.RejectRole)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+
+    def decisions(self):
+        return {k: "allow" if b.isChecked() else "deny" for k, b in self.groups.items()}
+
+
+def show_perm_notes(parent, notes, ask_continue=False):
+    """允許後系統那邊的狀況（測試通知、系統權限被擋）。ask_continue：問要不要接著執行，回傳 True/False。"""
+    while True:
+        box = QMessageBox(parent)
+        box.setWindowTitle("權限")
+        box.setText("已經存好你的選擇。系統那邊的狀況：\n\n" + "\n\n".join(n["text"] for n in notes))
+        panes = {}
+        for n in notes:
+            if n.get("pane") and n["pane"] not in panes.values():
+                panes[box.addButton(PANE_TEXT.get(n["pane"], "打開系統設定"), QMessageBox.ActionRole)] = n["pane"]
+        go = box.addButton("繼續執行" if ask_continue else "好", QMessageBox.AcceptRole)
+        stop = box.addButton("先不要執行", QMessageBox.RejectRole) if ask_continue else None
+        box.exec()
+        hit = box.clickedButton()
+        if hit in panes:
+            r = server.call("POST", "/api/system/open-settings", {"pane": panes[hit]})
+            if (r.get("json") or {}).get("error"):
+                QMessageBox.warning(parent, "打不開", r["json"]["error"])
+            continue
+        return hit is go and stop is not hit
+
+
+def post_perm(w, b, path, body, cb, title=""):
+    """呼叫一個會開始執行的 API；後端說要先取得權限（428），就先問，存好再呼叫一次。取消時 cb 收到 {"cancelled": True}。"""
+    def first(r):
+        np = (r or {}).get("need_permissions") if isinstance(r, dict) else None
+        if not np:
+            return cb(r)
+        name = np["workflow"]
+        t = title or (getattr(getattr(w, "win", None), "wf", {}).get(name) or {}).get("title") or name
+        dlg = PermissionDialog(w, t, np["items"])
+        if dlg.exec() != QDialog.Accepted:
+            return cb({"cancelled": True})
+
+        def saved(res):
+            if not res.get("ok"):
+                return cb({"error": res.get("error") or "權限存不起來"})
+            if res.get("notes") and not show_perm_notes(w, res["notes"], ask_continue=True):
+                return cb({"cancelled": True})
+            b.post(path, body, cb)
+        b.post("/api/permissions", {"workflow": name, "decisions": dlg.decisions()}, saved)
+    b.post(path, body, first)
+
+
+def check_folder(parent, path):
+    """附上資料夾的當下就讀一次（macOS 會在這時候跳出權限視窗）；被系統擋了就說明、回傳 False。"""
+    r = (server.call("POST", "/api/system/check-folder", {"path": path}).get("json") or {})
+    if r.get("ok"):
+        return True
+    box = QMessageBox(parent)
+    box.setWindowTitle("讀不了這個資料夾")
+    box.setText(r.get("error") or "讀不了這個資料夾")
+    pane = box.addButton(PANE_TEXT["files"], QMessageBox.ActionRole) if r.get("pane") else None
+    box.addButton("好", QMessageBox.AcceptRole)
+    box.exec()
+    if pane is not None and box.clickedButton() is pane:
+        server.call("POST", "/api/system/open-settings", {"pane": r["pane"]})
+    return False
 
 
 # ---------------------------------------------------------------- 小元件
@@ -505,7 +616,7 @@ class AttachMenuButton(QToolButton):
 
     def pick_folder(self):
         d = QFileDialog.getExistingDirectory(self, "選擇要附上的資料夾", self.att()["folder"] or os.path.expanduser("~"))
-        if d:
+        if d and check_folder(self, d):
             self._set("folder", d)
 
     def pick_images(self):
@@ -748,6 +859,7 @@ class WorkflowTab(QWidget):
         self.more.setPopupMode(QToolButton.InstantPopup)
         m = QMenu(self)
         self.act_edit = m.addAction("編輯設定", lambda: self.win.open_editor(self.win.wf.get(self.sel_wf)))
+        self.act_perm = m.addAction("權限…", self.on_permissions)
         m.addAction("＋ 新增工作流", lambda: self.win.open_editor(None))
         m.addSeparator()
         self.act_del = m.addAction("刪除這條工作流", self.on_delete)
@@ -901,6 +1013,7 @@ class WorkflowTab(QWidget):
         manual = w is None or is_manual(w["schedule"])
         self.act_edit.setEnabled(w is not None)
         self.act_del.setEnabled(w is not None)
+        self.act_perm.setEnabled(w is not None)
         self.enable.setVisible(w is not None and not manual)
         self.inp.setVisible(w is not None and manual)
         self.run_btn.setVisible(w is not None)
@@ -1149,23 +1262,46 @@ class WorkflowTab(QWidget):
         if not self.sel_wf or not self.run_btn.isEnabled():
             return
         self.run_btn.setEnabled(False)
-        text = self.inp.text()
-        self.inp.clear()
-        depth = self.run_depth.pop(self.sel_wf, None) or self.depth.value()
+        name, text = self.sel_wf, self.inp.text()
+        depth = self.run_depth.get(name) or self.depth.value()
         body = {"input": text, "depth": depth, **self.attach_btn.body()}
-        self.run_att.pop(self.sel_wf, None)                  # 附件只算這一次
-        self.attach_btn.refresh()
-        pm = self.run_model.pop(self.sel_wf, None)           # 臨時換的模型只算這一次
+        pm = self.run_model.get(name)
         if pm:
             body.update(provider=pm[0], model=pm[1])
 
         def done(r):
+            if r and r.get("cancelled"):                     # 權限詢問按了取消：輸入、附件都留著
+                self.run_btn.setEnabled(True)
+                return
             if r and r.get("error"):
                 QMessageBox.warning(self, "沒有開始執行", r["error"])
                 self.run_btn.setEnabled(True)
                 return
+            # 開始了：臨時調的深度、模型、附件、輸入都只算這一次
+            for d in (self.run_depth, self.run_model, self.run_att):
+                d.pop(name, None)
+            if self.sel_wf == name:
+                self.inp.clear()
+            self.attach_btn.refresh()
             self._after_run()
-        self.b.post(f"/api/workflows/{self.sel_wf}/run", body, done)
+        post_perm(self, self.b, f"/api/workflows/{name}/run", body, done)
+
+    def on_permissions(self):
+        w = self.win.wf.get(self.sel_wf)
+        if not w:
+            return
+        dlg = PermissionDialog(self, w["title"], w.get("permissions") or [], manage=True)
+        if dlg.exec() != QDialog.Accepted or not dlg.groups:
+            return
+
+        def saved(r):
+            if not r.get("ok"):
+                QMessageBox.warning(self, "存不起來", r.get("error", ""))
+                return
+            if r.get("notes"):
+                show_perm_notes(self, r["notes"])
+            self.win.refresh()
+        self.b.post("/api/permissions", {"workflow": self.sel_wf, "decisions": dlg.decisions()}, saved)
 
     def on_continue(self):
         r = (self.detail or {}).get("run") or {}
@@ -1183,6 +1319,9 @@ class WorkflowTab(QWidget):
         self.cont_btn.setEnabled(False)
 
         def done(res):
+            if res and res.get("cancelled"):
+                self.cont_btn.setEnabled(True)
+                return
             if res and res.get("error"):
                 QMessageBox.warning(self, "沒有開始", res["error"])
                 self.cont_btn.setEnabled(True)
@@ -1192,7 +1331,7 @@ class WorkflowTab(QWidget):
             self.attach_btn.refresh()
             self.win.toast("已接著繼續，看上面「現在」那一區")
             self._after_run()
-        self.b.post(f"/api/runs/{r['id']}/continue", body, done)
+        post_perm(self, self.b, f"/api/runs/{r['id']}/continue", body, done)
 
     def on_regenerate(self):
         r = (self.detail or {}).get("run") or {}
@@ -1201,13 +1340,16 @@ class WorkflowTab(QWidget):
         self.regen_btn.setEnabled(False)
 
         def done(res):
+            if res and res.get("cancelled"):
+                self.regen_btn.setEnabled(True)
+                return
             if res and res.get("error"):
                 QMessageBox.warning(self, "沒有開始", res["error"])
                 self.regen_btn.setEnabled(True)
                 return
             self.win.toast("已重新生成，看上面「現在」那一區")
             self._after_run()
-        self.b.post(f"/api/runs/{r['id']}/regenerate", {}, done)
+        post_perm(self, self.b, f"/api/runs/{r['id']}/regenerate", {}, done)
 
     def _after_run(self):
         self.sel_run = None
@@ -1567,10 +1709,13 @@ class SkillsTab(QWidget):
                 return
             go.setEnabled(False)
             pm = prov.currentData() or ("", "")
-            self.b.post(f"/api/skills/{name}/run", {"input": inp.text(), "provider": pm[0], "model": pm[1]}, after_run)
+            post_perm(self, self.b, f"/api/skills/{name}/run", {"input": inp.text(), "provider": pm[0], "model": pm[1]},
+                      after_run, title=f"試用 {name}")
 
         def after_run(r):
             go.setEnabled(True)
+            if r.get("cancelled"):
+                return
             if not r.get("ok"):
                 QMessageBox.warning(self, "無法執行", r.get("error", ""))
                 return

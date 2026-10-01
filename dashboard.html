@@ -312,6 +312,16 @@ details.raw { margin-top: 22px; color: var(--muted); font-size: 13px; }
 dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--elev); color: var(--ink); padding: 0;
          width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 48px); box-shadow: var(--shadow); }
 dialog::backdrop { background: rgba(0,0,0,.35); }
+#perm-dlg { width: min(520px, calc(100vw - 32px)); }
+.perm-item { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.perm-item:last-child { border-bottom: 0; }
+.perm-item .pt { font-weight: 600; }
+.perm-item .pd { color: var(--soft); font-size: 13px; margin: 4px 0 8px; line-height: 1.5; }
+.perm-item .pc { display: flex; gap: 14px; font-size: 13.5px; }
+.perm-item .pc label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+.perm-note { background: var(--tint); border-radius: 8px; padding: 10px 12px; margin: 8px 0; font-size: 13px; line-height: 1.55; }
+.perm-note.bad { border-left: 3px solid var(--bad); }
+.perm-note button { margin-top: 8px; }
 .dlg-h { padding: 18px 22px 0; font-size: 18px; font-weight: 600; }
 .dlg-b { padding: 8px 22px; overflow: auto; }
 .dlg-f { padding: 14px 22px 18px; display: flex; gap: 8px; justify-content: flex-end; align-items: center; border-top: 1px solid var(--line); }
@@ -437,6 +447,13 @@ input[data-list] { padding-right: 26px; background-image: linear-gradient(45deg,
     <div class="dlg-f"><span class="err" id="ed-err"></span>
       <button type="button" class="ghost" id="ed-cancel">取消</button><button type="submit" id="ed-save">儲存</button></div>
   </form>
+</dialog>
+
+<dialog id="perm-dlg">
+  <div class="dlg-h" id="perm-h">要求權限</div>
+  <div class="dlg-b" id="perm-b"></div>
+  <div class="dlg-f"><span class="err" id="perm-err"></span>
+    <button type="button" class="ghost" id="perm-cancel">取消</button><button type="button" id="perm-ok">確定</button></div>
 </dialog>
 
 <script>
@@ -731,7 +748,7 @@ function renderBar() {
     (manual ? `<textarea class="runin" rows="1" placeholder="要處理什麼？（Enter 換行，Ctrl/⌘+Enter 執行）">${esc(keep)}</textarea>` : "") +
     (w.running ? "" : attachMenu() + modelMenu(w) + depthMenu(runDepth[selWf] ?? w.depth ?? 3)) +
     (w.running ? `<button class="ghost" data-stop style="color:var(--bad)">停止</button>` : `<button data-run>立即執行</button>`);
-  $("#more-menu").innerHTML = `<span class="plain" data-act="edit">編輯設定</span><span class="plain" data-act="new">＋ 新增工作流</span>
+  $("#more-menu").innerHTML = `<span class="plain" data-act="edit">編輯設定</span><span class="plain" data-act="perms">權限…</span><span class="plain" data-act="new">＋ 新增工作流</span>
     <div class="sep"></div><span class="plain danger" data-act="delete">刪除這條工作流</span>`;
   const ta = document.querySelector("#wf-actions .runin");
   if (ta) growRunin(ta);
@@ -762,6 +779,71 @@ function modelMenu(w) {
     <div class="menu right" id="model-pick">${items}<div class="sep"></div><span class="plain" style="pointer-events:none;color:var(--muted);font-size:12px">只套用在下一次執行；工作流本身的設定不會改</span></div></div>`;
 }
 
+// ── 權限（像 macOS 的 app 權限）─────────────────────
+// 工作流第一次要用敏感功能（跳通知、用你的瀏覽器、讀本機檔案、建立工作流）時，後端回 428 + need_permissions，
+// 這裡跳出詢問；答完存起來再執行一次。允許後後端會先碰一下系統權限（例如送測試通知），有問題的話在這裡說明。
+const PANE_TEXT = {files: "打開「檔案與資料夾」設定", full_disk: "打開「完整磁碟取用權限」設定", notifications: "打開「通知」設定"};
+function permNotes(notes) {
+  return notes.map(n => `<div class="perm-note ${n.ok ? "" : "bad"}">${esc(n.text)}${n.pane ?
+    `<div><button class="ghost" data-open-pane="${esc(n.pane)}">${esc(PANE_TEXT[n.pane] || "打開系統設定")}</button></div>` : ""}</div>`).join("");
+}
+function permDialog({workflow, items, title, manage}) {
+  // manage = 從選單打開來改；否則是執行前的詢問（確定後回傳 true，呼叫的人再執行一次）
+  const dlg = $("#perm-dlg");
+  $("#perm-h").textContent = manage ? `「${title}」的權限` : `「${title}」想要使用這些功能`;
+  $("#perm-err").textContent = "";
+  $("#perm-b").innerHTML = (manage ? "" : `<p class="muted" style="font-size:13px;margin:6px 0 2px">第一次用到才會問；之後可以在工作流的「⋯ → 權限」改。排程執行時不會問，沒允許的功能那次就不用。</p>`) +
+    (items.length ? items.map(i => `<div class="perm-item"><div class="pt">${esc(i.label)}</div><div class="pd">${esc(i.detail)}</div>
+      <div class="pc"><label><input type="radio" name="perm-${esc(i.key)}" value="allow" ${i.state !== "deny" ? "checked" : ""}>允許</label>
+        <label><input type="radio" name="perm-${esc(i.key)}" value="deny" ${i.state === "deny" ? "checked" : ""}>不允許</label>
+        ${manage && !i.state ? `<span class="muted" style="font-size:12.5px">（還沒問過）</span>` : ""}</div></div>`).join("")
+      : `<p class="muted">這條工作流沒有用到需要權限的功能。</p>`);
+  const ok = $("#perm-ok"), cancel = $("#perm-cancel");
+  ok.textContent = manage ? "儲存" : "確定並執行"; ok.disabled = false; ok.hidden = manage && !items.length;
+  cancel.textContent = manage && !items.length ? "關閉" : "取消";
+  if (!dlg.open) dlg.showModal();
+  return new Promise(resolve => {
+    let stage = "ask";
+    const done = v => { dlg.close(); ok.onclick = cancel.onclick = null; resolve(v); };
+    cancel.onclick = () => done(false);
+    dlg.oncancel = e => { e.preventDefault(); done(false); };
+    ok.onclick = async () => {
+      if (stage === "notes") return done(true);
+      const decisions = Object.fromEntries(items.map(i => [i.key, dlg.querySelector(`input[name="perm-${CSS.escape(i.key)}"]:checked`)?.value || "deny"]));
+      ok.disabled = true;
+      const r = await post("/api/permissions", {workflow, decisions});
+      ok.disabled = false;
+      if (r.error) { $("#perm-err").textContent = r.error; return; }
+      lastSig = {};
+      if (!r.notes?.length) return done(true);
+      // 系統那邊有話要說（例如測試通知、系統權限被擋）：先給使用者看，再繼續
+      stage = "notes";
+      $("#perm-b").innerHTML = `<p style="margin:8px 0">已經存好你的選擇。系統那邊的狀況：</p>` + permNotes(r.notes);
+      ok.textContent = manage ? "完成" : "繼續執行"; cancel.textContent = manage ? "關閉" : "先不要執行";
+    };
+  });
+}
+// 呼叫一個會開始執行的 API；後端說要先取得權限，就先問，答完再呼叫一次
+async function withPerm(call, title) {
+  let res = await call();
+  if (res.need_permissions) {
+    const np = res.need_permissions;
+    if (!await permDialog({workflow: np.workflow, items: np.items, title: title || WF[np.workflow]?.title || np.workflow})) return {cancelled: true};
+    res = await call();
+  }
+  return res;
+}
+// 附上資料夾的當下就讀一次：macOS 會在這時候跳出「要允許存取…」；被擋就在選單裡說明
+async function checkFolder(path) {
+  const a = att();
+  a.folderErr = null;
+  if (!path.trim()) { refreshAttachMenu(); return; }
+  const r = await post("/api/system/check-folder", {path});
+  if (att() !== a || a.folder !== path) return;
+  a.folderErr = r.ok ? null : {text: r.error, pane: r.pane};
+  refreshAttachMenu();
+}
+
 // 執行列：「＋ 附件」二級選單。資料夾和圖片是兩件獨立的事，各自可以有、可以沒有；只套用在下一次執行（或「繼續」）
 const ATT = {};                                            // 每條工作流各自的附件：{folder, images: [{name, data, url}]}
 const att = () => (ATT[selWf] ??= {folder: "", images: []});
@@ -774,6 +856,7 @@ function attachMenu() {
       <div class="ah">資料夾</div>
       <div class="row2"><input type="text" id="att-folder" placeholder="資料夾路徑，例如 ~/Documents/報告" value="${esc(a.folder)}">
         ${pick ? `<button class="ghost" data-att-pick>選擇…</button>` : ""}${a.folder ? `<button class="ghost" data-att-clear="folder">清除</button>` : ""}</div>
+      ${a.folderErr ? permNotes([{ok: false, ...a.folderErr}]) : ""}
       <div class="hint">模型可以列出、讀取這個資料夾裡的檔案（只能讀、只限這次執行）。</div>
       <div class="sep"></div>
       <div class="ah">圖片</div>
@@ -808,6 +891,7 @@ document.addEventListener("keydown", e => {                // Ctrl/⌘+Enter：�
   else if (e.target.matches?.(".cont textarea")) { e.preventDefault(); document.querySelector("[data-cont]")?.click(); }
 });
 document.addEventListener("change", async e => {
+  if (e.target.id === "att-folder") { checkFolder(e.target.value); return; }
   if (e.target.id !== "att-img") return;
   const a = att();
   for (const f of [...e.target.files]) {
@@ -1478,6 +1562,7 @@ document.addEventListener("click", async e => {
   if (act) {
     const a = act.dataset.act;
     if (a === "edit") { closeMenus(); openEditor(WF[selWf]); }
+    else if (a === "perms") { closeMenus(); permDialog({workflow: selWf, items: WF[selWf].permissions || [], title: WF[selWf].title, manage: true}).then(() => tick()); }
     else if (a === "new") { closeMenus(); openEditor(null); }
     else if (a === "delete") {
       if (!armedDelete) { armedDelete = true; act.textContent = `再點一次，刪除「${WF[selWf].title}」`; return; }
@@ -1494,9 +1579,10 @@ document.addEventListener("click", async e => {
     const b = e.target.closest("[data-run]"), inp = document.querySelector("#wf-actions .runin");
     b.disabled = true;
     const [provider, model] = (runModel[selWf] || "|").split("|");
-    const res = await post(`/api/workflows/${encodeURIComponent(selWf)}/run`,
-      {input: inp?.value || "", depth: runDepth[selWf] ?? WF[selWf]?.depth ?? 3, ...(provider ? {provider, model} : {}), ...attachBody()});
-    if (res.error) { toast(res.error); b.disabled = false; return; }
+    const res = await withPerm(() => post(`/api/workflows/${encodeURIComponent(selWf)}/run`,
+      {input: inp?.value || "", depth: runDepth[selWf] ?? WF[selWf]?.depth ?? 3, ...(provider ? {provider, model} : {}), ...attachBody()}));
+    if (res.cancelled) { b.disabled = false; return; }
+    if (res.error) { toast(res.error, 4000); b.disabled = false; return; }
     delete runDepth[selWf]; delete runModel[selWf]; delete ATT[selWf];   // 臨時調的只算這一次，下次回到工作流的設定
     if (inp) { inp.value = ""; growRunin(inp); inp.blur(); }  // 離開輸入框：執行列才會重畫（按鈕、附件數字回到最新）
     setTimeout(async () => { selRun = (await j("/api/runs?workflow=" + encodeURIComponent(selWf)))[0]?.id; lastSig = {}; tick(); }, 400);
@@ -1504,11 +1590,13 @@ document.addEventListener("click", async e => {
   }
   if (e.target.closest("[data-att-pick]")) {
     const path = await window.pywebview.api.pick_folder();
-    if (path) { att().folder = path; refreshAttachMenu(); }
+    if (path) { att().folder = path; refreshAttachMenu(); checkFolder(path); }
     return;
   }
   const ac = e.target.closest("[data-att-clear]");
-  if (ac) { if (ac.dataset.attClear === "folder") att().folder = ""; else att().images = []; refreshAttachMenu(); return; }
+  if (ac) { if (ac.dataset.attClear === "folder") { att().folder = ""; att().folderErr = null; } else att().images = []; refreshAttachMenu(); return; }
+  const op = e.target.closest("[data-open-pane]");
+  if (op) { const r = await post("/api/system/open-settings", {pane: op.dataset.openPane}); if (r.error) toast(r.error, 4000); return; }
   const ar = e.target.closest("[data-att-rm]");
   if (ar) { att().images.splice(+ar.dataset.attRm, 1); refreshAttachMenu(); return; }
   const cb = e.target.closest("[data-cont], [data-regen]");
@@ -1519,9 +1607,10 @@ document.addEventListener("click", async e => {
     if (cont && !box?.value.trim() && !attCount(att())) { toast("先在框裡寫下要接著做什麼"); box?.focus(); return; }
     cb.disabled = true;
     const [provider, model] = (runModel[selWf] || "|").split("|");
-    const res = await post(`/api/runs/${id}/${cont ? "continue" : "regenerate"}`,
-      cont ? {input: box.value, ...(provider ? {provider, model} : {}), ...attachBody()} : {});
-    if (res.error) { toast(res.error); cb.disabled = false; return; }
+    const res = await withPerm(() => post(`/api/runs/${id}/${cont ? "continue" : "regenerate"}`,
+      cont ? {input: box.value, ...(provider ? {provider, model} : {}), ...attachBody()} : {}));
+    if (res.cancelled) { cb.disabled = false; return; }
+    if (res.error) { toast(res.error, 4000); cb.disabled = false; return; }
     if (cont) { delete ATT[selWf]; delete runModel[selWf]; box.value = ""; box.blur(); lastSig.bar = null; }
     toast(cont ? "已接著繼續，看上面「現在」那一區" : "已重新生成，看上面「現在」那一區");
     // 在「全部工作流」裡也可以繼續：沒選工作流時就看全部紀錄最新的那筆（不能送 workflow=null）
@@ -1996,8 +2085,10 @@ document.addEventListener("click", async e => {
   if (tr) {
     const input = $("#sk-try-in").value.trim(); if (!input) { $("#sk-try-in").focus(); return; }
     tr.disabled = true;
-    const r = await post(`/api/skills/${encodeURIComponent(tr.dataset.skTry)}/run`, {input, ...pickModel($("#sk-try-p"))});
+    const r = await withPerm(() => post(`/api/skills/${encodeURIComponent(tr.dataset.skTry)}/run`, {input, ...pickModel($("#sk-try-p"))}),
+                             `試用 ${tr.dataset.skTry}`);
     tr.disabled = false;
+    if (r.cancelled) return;
     if (!r.ok) { toast(r.error || "無法執行", 4000); return; }
     // 到工作流分頁看它跑
     selWf = null; showAll = false; lastSig = {};

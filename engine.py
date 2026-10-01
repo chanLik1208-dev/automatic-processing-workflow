@@ -346,6 +346,7 @@ def trash_workflow(name):
     trash.mkdir(exist_ok=True)
     dest = trash / f"{name}-{datetime.datetime.now():%Y%m%d-%H%M%S}.json"
     path.replace(dest)
+    forget_permissions(name)                            # 之後新建同名的工作流要重新問
     return str(dest)
 
 
@@ -766,7 +767,7 @@ def chat_codex(p, model, messages, tools, live, timeout=600):
         exe, args = _mcp_command()
         env = {"AW_MCP_RUN": str(live["run_id"]), "AW_MCP_SKILLS": ",".join(names),
                "AW_MCP_MAX": str(live.get("_max_steps", 12)), "AUTOWORKFLOW_HOME": str(ROOT),
-               "AW_FOLDERS": os.pathsep.join(live.get("_folders") or [])}
+               "AW_FOLDERS": os.pathsep.join(live.get("_folders") or []), "AW_PERMS": ",".join(live.get("_perms") or [])}
         s = "mcp_servers.autoworkflow"
         cmd += ["-c", f"{s}.command={json.dumps(exe)}", "-c", f"{s}.args={json.dumps(args)}",
                 "-c", f"{s}.env={{" + ",".join(f"{k}={json.dumps(v)}" for k, v in env.items()) + "}",
@@ -1339,6 +1340,215 @@ def next_idx(run_id):
     return 0 if r is None else r + 1
 
 
+# ---------- 權限 ----------
+# 像 macOS 的 app 權限：工作流第一次要用這些功能時，先問使用者（允許／不允許），記住答案，可以在工作流的「權限」改。
+# 手動執行：還沒問過就先問，問完才開始。排程執行：沒有人可以回答，沒問過的當作不允許（這次不用，紀錄裡寫明）。
+PERMISSIONS = {
+    "notify": {"label": "跳桌面通知", "skills": ["notify"], "gate": "tool",
+               "detail": "在你的桌面跳出通知。"},
+    "browser": {"label": "用你的瀏覽器讀網頁", "skills": ["fetch_url", "web_search"], "gate": "inside",
+                "detail": "一般讀法拿不到內容、或搜尋被擋時，用程式專用的 Chrome / Edge 資料夾去讀"
+                          "（會帶著你在「登入視窗」登入過的帳號）。只讀頁面文字，不點擊、不輸入。"},
+    "local_files": {"label": "讀本機檔案", "skills": ["tail_file"], "gate": "tool",
+                    "detail": "讀設定裡「可讀取的路徑」列出的檔案（例如訓練或系統的記錄檔）。"},
+    "create_workflow": {"label": "建立新的工作流", "skills": ["create_workflow"], "gate": "tool",
+                        "detail": "幫你新增工作流；新的工作流可能帶排程，之後會自己執行。"},
+}
+PERM_STATES = ("allow", "deny")
+_perm_lock = threading.Lock()
+
+
+class NeedPermission(Exception):
+    """手動執行前，工作流有還沒問過的權限：介面要先問使用者。"""
+
+    def __init__(self, name, items):
+        super().__init__("這個工作流要先取得權限：" + "、".join(i["label"] for i in items))
+        self.name, self.items = name, items
+
+
+def load_permissions():
+    try:
+        d = json.loads((ROOT / "permissions.json").read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_permissions(d):
+    path = ROOT / "permissions.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def permission_needs(wf):
+    """這個工作流會用到哪些要問的權限（照它的 skill；瀏覽器要設定裡打開才算）。"""
+    sk = set(wf.get("skills") or [])
+    out = []
+    for key, p in PERMISSIONS.items():
+        if key == "browser" and not cfg("browser.enabled", False):
+            continue
+        if sk & set(p["skills"]):
+            out.append(key)
+    return out
+
+
+def permission_view(name, wf=None):
+    """[{key, label, detail, state}]，state 是 allow / deny / None（還沒問過）。"""
+    wf = wf if wf is not None else load_workflows().get(name) or {}
+    saved = load_permissions().get(name) or {}
+    return [{"key": k, "label": PERMISSIONS[k]["label"], "detail": PERMISSIONS[k]["detail"],
+             "state": saved.get(k) if saved.get(k) in PERM_STATES else None} for k in permission_needs(wf)]
+
+
+def missing_permissions(name, wf=None):
+    return [i for i in permission_view(name, wf) if i["state"] is None]
+
+
+def set_permissions(name, decisions):
+    """存使用者的選擇（{key: "allow" / "deny" / None=重新問}）。新允許的功能順便碰一下系統權限，
+    讓 macOS 之類的系統權限視窗現在就跳出來，而不是執行到一半；回傳要給使用者看的提醒。"""
+    if not isinstance(decisions, dict):
+        raise ValueError("權限格式不對")
+    for k, v in decisions.items():
+        if k not in PERMISSIONS:
+            raise ValueError(f"不認得的權限：{k}")
+        if v not in PERM_STATES and v is not None:
+            raise ValueError(f"權限只能是 allow 或 deny：{k}")
+    with _perm_lock:
+        d = load_permissions()
+        cur = dict(d.get(name) or {})
+        newly = [k for k, v in decisions.items() if v == "allow" and cur.get(k) != "allow"]
+        for k, v in decisions.items():
+            if v is None:
+                cur.pop(k, None)
+            else:
+                cur[k] = v
+        if cur:
+            d[name] = cur
+        else:
+            d.pop(name, None)
+        _save_permissions(d)
+    return [n for k in newly for n in [probe_permission(k)] if n]
+
+
+def forget_permissions(name):
+    with _perm_lock:
+        d = load_permissions()
+        if d.pop(name, None) is not None:
+            _save_permissions(d)
+
+
+def run_permission(key):
+    """執行中的 skill 問：這次執行可以用這個權限嗎？（不在執行中，例如直接測試 skill，就不擋）"""
+    got = getattr(_ctx, "perms", None)
+    return True if got is None else key in got
+
+
+# ---------- 系統權限（macOS 等） ----------
+# 系統的權限視窗只會在程式真的去碰那個東西時跳出來；所以在使用者按「允許」、附上資料夾的當下就先碰一次，
+# 被系統擋了就講清楚去哪裡打開，不要等到執行到一半才失敗。
+
+SETTINGS_PANES = {
+    "darwin": {"files": "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders",
+               "full_disk": "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+               "notifications": "x-apple.systempreferences:com.apple.preference.notifications"},
+    "win32": {"files": "ms-settings:privacy-broadfilesystemaccess", "notifications": "ms-settings:notifications"},
+}
+
+
+def open_system_settings(pane):
+    url = SETTINGS_PANES.get(sys.platform, {}).get(pane)
+    if not url:
+        raise ValueError("這個系統沒有對應的設定頁，請自己到系統設定裡找")
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", url])
+    else:
+        os.startfile(url)                               # noqa: Windows 才有
+    return True
+
+
+def _mac_folder_kind(path):
+    home = os.path.realpath(os.path.expanduser("~"))
+    for sub, label in (("Desktop", "桌面"), ("Documents", "文件"), ("Downloads", "下載項目"),
+                       ("Library/Mobile Documents", "iCloud 雲碟")):
+        base = os.path.join(home, sub)
+        if path == base or path.startswith(base + os.sep):
+            return label
+    if path.startswith("/Volumes/"):
+        return "卸除式卷宗（或網路卷宗）"
+    return ""
+
+
+def probe_folder(path):
+    """真的去讀一次資料夾（macOS 會在這時候跳出「要允許存取…」的視窗）；被擋就回傳說明，沒問題回傳 None。"""
+    try:
+        os.listdir(path)
+        return None
+    except PermissionError:
+        if sys.platform == "darwin":
+            kind = _mac_folder_kind(path)
+            where = (f"「系統設定 → 隱私權與安全性 → 檔案與資料夾」裡，打開 AutoWorkflow 的「{kind}」"
+                     if kind else "「系統設定 → 隱私權與安全性 → 完整磁碟取用權限」裡，打開 AutoWorkflow")
+            return f"macOS 沒有允許 AutoWorkflow 讀這個資料夾：{path}。到{where}，再附一次。"
+        if sys.platform == "win32":
+            return f"Windows 不讓 AutoWorkflow 讀這個資料夾：{path}。檢查資料夾的安全性設定，或「設定 → 隱私權與安全性 → 檔案系統」。"
+        return f"沒有權限讀這個資料夾：{path}"
+    except OSError as e:
+        return f"讀不了這個資料夾：{path}（{e.strerror or e}）"
+
+
+def probe_permission(key):
+    """使用者剛允許某個功能：先碰一下系統那邊，回傳 {key, ok, text, pane} 或 None（沒什麼要說的）。"""
+    label = PERMISSIONS[key]["label"]
+    if key == "notify":
+        try:
+            spec = importlib.util.spec_from_file_location("_aw_notify", ROOT / "skills" / "notify.py")
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            got = mod.run("AutoWorkflow", "通知測試：看到這則就代表可以跳通知了")
+        except Exception as e:
+            got = f"送不出去：{e}"
+        ok = got == "已送出通知"
+        text = "已經送出一則測試通知。" if ok else f"測試通知沒有送出：{got}"
+        if sys.platform == "darwin":
+            text += ("沒看到的話，到「系統設定 → 通知」找「工序指令編寫程式」（Script Editor，"
+                     "macOS 用它送出這類通知），打開「允許通知」。")
+        return {"key": key, "ok": ok, "text": text, "pane": "notifications" if sys.platform in SETTINGS_PANES else ""}
+    if key == "local_files":
+        import glob as _glob
+        bad = []
+        for pat in cfg("readable_paths", []) or []:
+            pat = os.path.expanduser(str(pat).replace("{data}", str(ROOT)))
+            for f in _glob.glob(pat)[:20]:
+                try:
+                    if os.path.isfile(f):
+                        with open(f, "rb") as fh:
+                            fh.read(1)
+                except PermissionError:
+                    bad.append(f)
+                except OSError:
+                    pass
+        if not bad:
+            return None
+        where = ("到「系統設定 → 隱私權與安全性 → 完整磁碟取用權限」打開 AutoWorkflow。" if sys.platform == "darwin"
+                 else "檢查這些檔案的讀取權限。")
+        return {"key": key, "ok": False, "text": f"系統不讓 AutoWorkflow 讀：{'、'.join(bad[:5])}。{where}",
+                "pane": "full_disk" if sys.platform == "darwin" else ""}
+    if key == "browser":
+        try:
+            spec = importlib.util.spec_from_file_location("_aw_fetch_url", ROOT / "skills" / "fetch_url.py")
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            found = mod.find_browser()
+        except Exception:
+            found = None
+        if not found:
+            return {"key": key, "ok": False, "text": f"「{label}」需要 Chrome 或 Edge，這台電腦找不到。", "pane": ""}
+        return None
+    return None
+
+
 # ---------- 附件（資料夾、圖片） ----------
 # 資料夾：這次執行的 read_folder 只能讀這個資料夾。主程式在執行緒裡記住；ChatGPT 的 MCP 伺服器是另一個行程，用環境變數傳
 _ctx = threading.local()
@@ -1357,6 +1567,9 @@ def check_attachments(att):
         if not os.path.isdir(folder):
             raise ValueError(f"找不到這個資料夾：{folder}")
         folder = os.path.realpath(folder)
+        err = probe_folder(folder)                       # 系統不給讀（macOS 的檔案與資料夾權限）：開始前就講
+        if err:
+            raise ValueError(err)
     images = [str(x) for x in att.get("images") or []]
     for x in images:
         if not os.path.isfile(x) or pathlib.Path(x).suffix.lower() not in IMAGE_TYPES:
@@ -1449,6 +1662,19 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
         allowed.append("read_folder")                   # 附了資料夾就給讀資料夾的工具（只限這次、只限那個資料夾）
     if "fetch_url" in allowed and "view_image" in skills and "view_image" not in allowed:
         allowed.append("view_image")                    # 能讀網頁就能看網頁上的圖（fetch_url 會列出圖片網址）
+    # 權限：不允許（或排程執行時還沒問過）的功能，這次不給
+    saved = load_permissions().get(name) or {}
+    needs = permission_needs(wf)
+    granted = {k for k in needs if saved.get(k) == "allow"}
+    perm_notes = []
+    for k in needs:
+        if k in granted:
+            continue
+        p = PERMISSIONS[k]
+        if p["gate"] == "tool":
+            allowed = [s for s in allowed if s not in p["skills"]]
+        why = "你沒有允許" if saved.get(k) == "deny" else "還沒問過你（排程執行時不會問）"
+        perm_notes.append((k, p["label"], why))
     tools = [{"type": "function", "function": skills[s].SPEC} for s in allowed]
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
@@ -1467,6 +1693,9 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
     if wf.get("description"):
         task = f"（這個工作流的說明：{wf['description']}）\n\n{task}"
     notes = []
+    if perm_notes:
+        notes.append("這次沒有權限使用：" + "、".join(f"{lb}" for _, lb, _ in perm_notes) +
+                     "。任務裡需要這些功能的部分，在結果裡照實說明沒有權限，不要假裝做了。")
     if att["folder"]:
         notes.append(f"使用者附上了一個資料夾：{att['folder']}。需要時用 read_folder 工具列出和讀取裡面的檔案（只能讀這個資料夾）。")
     if att["images"]:
@@ -1513,15 +1742,20 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
     run_id = _exec("INSERT INTO runs (workflow, provider, model, trigger, status, started, input, depth, params) VALUES (?,?,?,?,?,?,?,?,?)",
                    (name, provider, model or "", trigger, "running", time.time(), task, level, json.dumps(params, ensure_ascii=False)))
     _ctx.folders = [att["folder"]] if att["folder"] else []
+    _ctx.perms = set(granted)
     idx, tin, tout = 0, 0, 0
     live = LIVE[run_id] = {"run_id": run_id, "workflow": name, "title": wf.get("title", name),
                            "started": time.time(), "round": 0, "provider": provider, "model": model or "",
                            "_max_steps": wf["max_steps"], "_images": conversation_images(messages),   # 訂閱 CLI：整段對話附過的圖片
-                           "_folders": [att["folder"]] if att["folder"] else []}
+                           "_folders": [att["folder"]] if att["folder"] else [], "_perms": sorted(granted)}
 
     fails, first_err = 0, None
     viewed = []                                        # 這次執行 view_image 看過的圖片（有上限）
     used = {mkey(provider, model)}                     # 這次執行用過的 (來源, 模型)，不會重複換回去
+    if perm_notes:
+        add_step(run_id, idx, "note", "permissions", "",
+                 "這次不使用：" + "；".join(f"{lb}（{why}）" for _, lb, why in perm_notes) + "。可以在工作流的「權限」裡改。")
+        idx += 1
     if auto_note:
         add_step(run_id, idx, "note", "auto", "", auto_note)
         idx += 1
@@ -1633,6 +1867,7 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
         except Exception:
             pass
         _ctx.folders = []
+        _ctx.perms = None
         LIVE.pop(run_id, None)
         _cancel.discard(run_id)
 
@@ -1703,6 +1938,10 @@ def start_async(name, trigger="manual", extra_input="", wf=None, depth=None, att
     if depth not in (None, ""):
         parse_depth(depth)                                   # 先檢查，錯了直接回 400，不要開了執行緒才失敗
     attachments = check_attachments(attachments)
+    if trigger == "manual":
+        miss = missing_permissions(name, wf if wf is not None else load_workflows().get(name))
+        if miss:
+            raise NeedPermission(name, miss)              # 介面先問使用者，答完再按一次執行
     if parent and not run_messages(parent):
         raise ValueError("這筆紀錄沒有保存對話內容（比較舊的版本跑的），沒辦法接著繼續")
     with _running_lock:

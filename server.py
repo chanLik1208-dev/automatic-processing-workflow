@@ -39,6 +39,7 @@ def workflows_view():
                 "last": dict(last) if last else None,
                 "total": stats[0], "ok": stats[1] or 0, "failed": stats[2] or 0,
                 "next_due": due.timestamp() if due else None,
+                "permissions": engine.permission_view(name, wf),
             })
     return out
 
@@ -216,8 +217,37 @@ class Api:
         self.send({"error": "not found"}, 404)
 
     def route_post(self, raw_path, body):
+        try:
+            return self._route_post(raw_path, body)
+        except engine.NeedPermission as e:
+            # 手動執行前還有沒問過的權限：介面跳出詢問，答完再執行一次
+            return self.send({"error": str(e), "need_permissions": {"workflow": e.name, "items": e.items}}, 428)
+
+    def _route_post(self, raw_path, body):
         u = urlparse(raw_path)
         parts = u.path.strip("/").split("/")
+        if parts == ["api", "permissions"]:
+            name = str(body.get("workflow") or "")
+            if name not in engine.load_workflows() and not name.startswith("skill:"):
+                return self.send({"error": "no such workflow"}, 404)
+            try:
+                notes = engine.set_permissions(name, body.get("decisions") or {})
+            except ValueError as e:
+                return self.send({"error": str(e)}, 400)
+            return self.send({"ok": True, "notes": notes})
+        if parts == ["api", "system", "check-folder"]:
+            # 附資料夾的當下就去讀一次：macOS 會在這時候跳出權限視窗；被擋就告訴使用者去哪裡打開
+            path = os.path.realpath(os.path.expanduser(str(body.get("path") or "").strip()))
+            if not os.path.isdir(path):
+                return self.send({"ok": False, "error": f"找不到這個資料夾：{path}", "pane": ""})
+            err = engine.probe_folder(path)
+            pane = "files" if err and sys.platform in engine.SETTINGS_PANES else ""
+            return self.send({"ok": not err, "error": err or "", "pane": pane, "path": path})
+        if parts == ["api", "system", "open-settings"]:
+            try:
+                return self.send({"ok": engine.open_system_settings(str(body.get("pane") or ""))})
+            except Exception as e:
+                return self.send({"error": str(e)}, 400)
         if len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] in ("continue", "regenerate"):
             if not parts[2].isdigit():
                 return self.send({"error": "紀錄編號不對"}, 400)
@@ -295,6 +325,8 @@ class Api:
                     name = f"skill:{parts[2]}"
                     return self.send({"ok": True, "started": engine.start_async(name, "manual", body.get("input", ""), wf),
                                       "workflow": name})
+            except engine.NeedPermission:
+                raise                                       # 交給外層回 428，介面先問權限
             except Exception as e:
                 return self.send({"error": str(e)}, 400)
             return self.send({"error": "not found"}, 404)

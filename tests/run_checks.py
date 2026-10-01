@@ -565,6 +565,94 @@ def t_attach_continue():
     return "圖片送到模型、資料夾只讀得到裡面、繼續沿用對話、重新生成照原本的輸入和附件"
 
 
+def t_permissions():
+    """像 macOS 的權限：手動執行先問、排程沒問過就不用、不允許的工具模型拿不到；系統權限被擋時講清楚去哪裡開。"""
+    import http.server, json as _j, socketserver
+    reqs = []
+
+    class Model(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            reqs.append(_j.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(b'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
+    model = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Model)
+    threading.Thread(target=model.serve_forever, daemon=True).start()
+    raw = _j.loads((HOME / "config.json").read_text(encoding="utf-8"))
+    raw["providers"]["fakeperm"] = {"label": "假模型", "base_url": f"http://127.0.0.1:{model.server_address[1]}/v1",
+                                    "api_key": "x", "default_model": "fake"}
+    raw.setdefault("browser", {})["enabled"] = True
+    raw.setdefault("lmstudio_guard", {}).update(nan_watchdog=False, raw_capture=False)
+    (HOME / "config.json").write_text(_j.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    try:
+        engine.save_workflow("perm-check", {"title": "權限檢查", "task": "回報", "provider": "fakeperm",
+                                            "skills": ["notify", "fetch_url", "tail_file"], "schedule": {}}, create=True)
+        assert [i["key"] for i in engine.missing_permissions("perm-check")] == ["notify", "browser", "local_files"]
+        # 手動執行：還沒問過 → 428，什麼都沒開始
+        r = server.call("POST", "/api/workflows/perm-check/run", {"input": ""})
+        assert r["status"] == 428 and [i["key"] for i in r["json"]["need_permissions"]["items"]] == \
+            ["notify", "browser", "local_files"], r
+        assert "perm-check" not in engine._running
+        r = server.call("POST", "/api/skills/notify/run", {"input": "測試", "provider": "fakeperm"})
+        assert r["status"] == 428 and r["json"]["need_permissions"]["workflow"] == "skill:notify", r
+        # 排程執行：沒人回答 → 那些工具這次不給、紀錄裡寫明、跟模型說沒有權限
+        rid = engine.run_workflow("perm-check", "schedule", "")
+        names = [t["function"]["name"] for t in reqs[-1]["tools"]]
+        assert "notify" not in names and "tail_file" not in names and "fetch_url" in names, names
+        assert "沒有權限使用" in reqs[-1]["messages"][1]["content"]
+        with engine.db() as c:
+            note = c.execute("SELECT output FROM steps WHERE run_id=? AND name='permissions'", (rid,)).fetchone()[0]
+        assert "排程執行時不會問" in note, note
+        # 使用者回答：不允許通知、允許瀏覽器和讀檔
+        bad = server.call("POST", "/api/permissions", {"workflow": "perm-check", "decisions": {"notify": "maybe"}})
+        assert bad["status"] == 400
+        r = server.call("POST", "/api/permissions", {"workflow": "perm-check",
+                                                     "decisions": {"notify": "deny", "browser": "allow", "local_files": "allow"}})
+        assert r["status"] == 200 and r["json"]["ok"], r
+        assert not engine.missing_permissions("perm-check")
+        engine.run_workflow("perm-check", "manual", "")
+        names = [t["function"]["name"] for t in reqs[-1]["tools"]]
+        assert "notify" not in names and "tail_file" in names, names
+        # 執行中的 skill 問得到這次允許了什麼（瀏覽器在 skill 裡面擋）；不在執行中就不擋
+        engine._ctx.perms = {"notify"}
+        assert not engine.run_permission("browser") and engine.run_permission("notify")
+        engine._ctx.perms = None
+        assert engine.run_permission("browser")
+        # 刪掉工作流：權限一起忘掉，之後同名的要重新問
+        engine.trash_workflow("perm-check")
+        assert "perm-check" not in engine.load_permissions()
+        # 系統權限（macOS）：讀資料夾被擋 → 附件在開始前就擋下，說明要去哪個設定打開
+        real_listdir, real_plat = os.listdir, sys.platform
+        desk = os.path.join(os.path.expanduser("~"), "Desktop", "x")
+        try:
+            def deny(path):
+                raise PermissionError(1, "Operation not permitted")
+            os.listdir = deny
+            sys.platform = "darwin"
+            msg = engine.probe_folder(os.path.realpath(desk))
+            assert "檔案與資料夾" in msg and "桌面" in msg, msg
+            assert "完整磁碟取用權限" in engine.probe_folder("/opt/elsewhere")
+            d = HOME / "locked"
+            d.mkdir(exist_ok=True)
+            try:
+                engine.check_attachments({"folder": str(d)})
+                raise AssertionError("系統不給讀的資料夾應該在開始前就擋下")
+            except ValueError as e:
+                assert "macOS 沒有允許" in str(e), e
+            r = server.call("POST", "/api/system/check-folder", {"path": str(d)})
+            assert r["json"]["ok"] is False and r["json"]["pane"] == "files", r
+        finally:
+            os.listdir, sys.platform = real_listdir, real_plat
+        assert server.call("POST", "/api/system/check-folder", {"path": str(HOME)})["json"]["ok"]
+    finally:
+        model.shutdown()
+    return "手動執行先問（428）；排程沒問過就不用並寫進紀錄；不允許的工具模型拿不到；刪工作流會忘掉；macOS 讀資料夾被擋時開始前就說明"
+
+
 def t_web_images():
     """網頁上的圖片：fetch_url 列出正文圖片（跳過 logo、追蹤點）→ 模型用 view_image 挑一張 → 圖片真的送到模型；每次最多 6 張。"""
     import base64 as _b64, http.server, json as _j, re as _re, socketserver
@@ -780,6 +868,7 @@ def main():
     check("搜尋被擋改用瀏覽器", t_search_browser_fallback)
     check("附件 / 繼續 / 重新生成", t_attach_continue)
     check("網頁圖片給模型看", t_web_images)
+    check("權限（先問再執行）", t_permissions)
     check("搜尋", t_search, skip=net)
     check("匯出 Word / PDF", t_export)
     check("檢查更新", t_update, skip=net)
