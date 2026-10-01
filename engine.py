@@ -1452,7 +1452,8 @@ def run_permission(key):
 SETTINGS_PANES = {
     "darwin": {"files": "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders",
                "full_disk": "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
-               "notifications": "x-apple.systempreferences:com.apple.preference.notifications"},
+               "notifications": "x-apple.systempreferences:com.apple.preference.notifications",
+               "app_management": "x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles"},
     "win32": {"files": "ms-settings:privacy-broadfilesystemaccess", "notifications": "ms-settings:notifications"},
 }
 
@@ -1545,7 +1546,19 @@ def probe_permission(key):
             found = None
         if not found:
             return {"key": key, "ok": False, "text": f"「{label}」需要 Chrome 或 Edge，這台電腦找不到。", "pane": ""}
-        return None
+        if sys.platform != "darwin":
+            return None
+        # macOS：AutoWorkflow 開的 Chrome 在背景自我更新時，系統會算成「AutoWorkflow 想要修改 App」（App 管理）。
+        # 現在先開一次（只開空白頁），讓這個系統詢問在這裡出現，而不是工作流執行到一半
+        _, err = mod._browser_dom("about:blank", 20)
+        text = ("已經先用瀏覽器試開一次。macOS 如果問「AutoWorkflow 想要修改你 Mac 上的 App」（App 管理）："
+                "那是 AutoWorkflow 開的 Chrome 在背景自我更新，算到了 AutoWorkflow 頭上。"
+                "允許的話 Chrome 可以照常更新；不允許也能讀網頁，只是 Chrome 要等你自己打開時才更新。"
+                "之後想改，到「系統設定 → 隱私權與安全性 → App 管理」。")
+        if err and "about:blank" not in err:
+            text = f"試開瀏覽器失敗：{err}。" + text
+        return {"key": key, "ok": not err, "text": text, "pane": "app_management"}
+    return None
     return None
 
 
@@ -1649,7 +1662,34 @@ def run_params(run_id):
     return r[0], params, r[2], r[3]
 
 
-def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, attachments=None, parent=None):
+HISTORY_MAX = 24000                                 # 「重新對話」帶進去的上一次過程＋結果，最多幾個字
+
+
+def run_history(run_id):
+    """把某次執行整理成給模型參考的文字：當時的輸入、每一步用了什麼工具拿到什麼、最後的結果（或錯誤）。"""
+    with db() as c:
+        r = c.execute("SELECT input, status, output, error FROM runs WHERE id=?", (run_id,)).fetchone()
+        steps = c.execute("SELECT kind, name, input, output FROM steps WHERE run_id=? ORDER BY idx, id", (run_id,)).fetchall()
+    if not r:
+        raise ValueError("找不到這筆紀錄")
+    lines = []
+    for kind, sname, inp, out in steps:
+        if kind == "tool":
+            lines.append(f"- 用了 {sname}（{str(inp or '')[:300]}）→ {str(out or '')[:800]}")
+        elif kind == "error":
+            lines.append(f"- 出錯：{str(out or '')[:400]}")
+        elif kind == "note":
+            lines.append(f"- 備註：{str(out or '')[:300]}")
+    proc = "\n".join(lines) or "（沒有使用工具）"
+    result = (r[2] or "").strip() or f"（沒有完成：{r[3] or r[1]}）"
+    room = HISTORY_MAX - len(result) - 600
+    if len(proc) > room:
+        proc = proc[:max(2000, room)] + "\n…（過程太長，後面省略）"
+    return (f"=== 上一次執行（參考用）===\n上一次的輸入：\n{str(r[0] or '')[:3000]}\n\n"
+            f"上一次的過程：\n{proc}\n\n上一次的結果：\n{result[:12000]}\n=== 上一次執行結束 ===")
+
+
+def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, attachments=None, parent=None, reference=None):
     att = check_attachments(attachments)
     wf = dict(wf) if wf else load_workflows()[name]
     wf.setdefault("max_steps", cfg("limits.max_steps", 12))
@@ -1720,6 +1760,11 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
     else:
         if extra_input:
             task += f"\n\n額外輸入：{extra_input}"
+        if reference:
+            # 重新對話：從頭跑一次工作流，把上一次的過程和結果當參考（不是接著同一段對話）
+            task += ("\n\n這次是重新執行這個工作流。下面是上一次執行的過程和結果，當作參考："
+                     "沿用確實有用的資料、避開上一次失敗或不完整的地方，有新的指示時以新的指示為準；"
+                     "需要最新資料就重新查，不要直接照抄上一次的結果。\n\n" + run_history(reference))
         if notes:
             task += "\n\n" + "\n".join(notes)
         if depth_note:
@@ -1737,7 +1782,7 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
             provider, model, auto_note = "auto", None, str(e)
     else:
         provider, model = wf.get("provider", "lmstudio"), wf.get("model")
-    params = {"extra_input": extra_input or "", "attachments": att, "parent": parent,
+    params = {"extra_input": extra_input or "", "attachments": att, "parent": parent, "reference": reference,
               "provider": wf.get("provider") if wf.get("_override") else None, "model": wf.get("model") if wf.get("_override") else None}
     run_id = _exec("INSERT INTO runs (workflow, provider, model, trigger, status, started, input, depth, params) VALUES (?,?,?,?,?,?,?,?,?)",
                    (name, provider, model or "", trigger, "running", time.time(), task, level, json.dumps(params, ensure_ascii=False)))
@@ -1888,7 +1933,21 @@ def regenerate_run(run_id):
         raise ValueError("這條工作流已經刪掉了（或是 skill 試用，請到 skill 頁重新試用）")
     wf = with_model(name, params.get("provider"), params.get("model")) if params.get("provider") else None
     return start_async(name, "manual", params.get("extra_input", ""), wf, level,
-                       params.get("attachments"), parent=params.get("parent"))
+                       params.get("attachments"), parent=params.get("parent"), reference=params.get("reference"))
+
+
+def redo_run(run_id, text="", attachments=None, provider=None, model=None):
+    """重新對話：帶著這次的過程和結果，從頭再跑一次工作流（新的輸入可以省略）。附件沒另外給就沿用那次的。"""
+    name, params, _, level = run_params(run_id)
+    if name not in load_workflows():
+        raise ValueError("這條工作流已經刪掉了（或是 skill 試用，請到 skill 頁重新試用）")
+    run_history(run_id)                                  # 紀錄不在了就先擋下
+    if provider:
+        wf = with_model(name, provider, model)
+    else:
+        wf = with_model(name, params.get("provider"), params.get("model")) if params.get("provider") else None
+    att = attachments if attachments and (attachments.get("folder") or attachments.get("images")) else params.get("attachments")
+    return start_async(name, "manual", text, wf, level, att, reference=run_id)
 
 
 # ---------- 排程 ----------
@@ -1934,7 +1993,7 @@ def with_model(name, provider=None, model=None):
     return wf
 
 
-def start_async(name, trigger="manual", extra_input="", wf=None, depth=None, attachments=None, parent=None):
+def start_async(name, trigger="manual", extra_input="", wf=None, depth=None, attachments=None, parent=None, reference=None):
     if depth not in (None, ""):
         parse_depth(depth)                                   # 先檢查，錯了直接回 400，不要開了執行緒才失敗
     attachments = check_attachments(attachments)
@@ -1951,7 +2010,7 @@ def start_async(name, trigger="manual", extra_input="", wf=None, depth=None, att
 
     def job():
         try:
-            run_workflow(name, trigger, extra_input, wf, depth, attachments, parent)
+            run_workflow(name, trigger, extra_input, wf, depth, attachments, parent, reference)
         finally:
             _running.discard(name)
     threading.Thread(target=job, daemon=True).start()

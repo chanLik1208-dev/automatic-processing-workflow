@@ -407,6 +407,10 @@ def t_browser_read():
     import http.server, json as _j, socketserver
     sys.path.insert(0, str(HOME / "skills"))
     import fetch_url
+    if os.environ.get("AW_TEST_BROWSER"):                # 沒裝 Chrome 的機器可以指定一個 Chromium 來測
+        c = _j.loads((HOME / "config.json").read_text(encoding="utf-8"))
+        c.setdefault("export", {})["browser_path"] = os.environ["AW_TEST_BROWSER"]
+        (HOME / "config.json").write_text(_j.dumps(c, ensure_ascii=False), encoding="utf-8")
     if not fetch_url.find_browser():
         raise Skip("這台機器沒有 Chrome / Edge")
     page = ('<!doctype html><html><head><meta charset="utf-8"><title>JS 頁</title></head><body><div id="a"></div>'
@@ -418,11 +422,13 @@ def t_browser_read():
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(page.encode("utf-8"))
+            self.wfile.write((wall if self.path == "/wall" else page).encode("utf-8"))
 
         def log_message(self, *a):
             pass
 
+    wall = ('<!doctype html><html><head><meta charset="utf-8"><title>验证</title></head><body><div id="a"></div>'
+            '<script>document.getElementById("a").innerHTML="<p>亲，请拖动下方滑块完成验证，通过验证以确保正常访问。</p>"</script></body></html>')
     srv = socketserver.TCPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{srv.server_address[1]}/"
@@ -437,11 +443,29 @@ def t_browser_read():
         conf_path.write_text(_j.dumps(conf, ensure_ascii=False), encoding="utf-8")
         on = fetch_url.run(url)
         assert "JavaScript 產生的" in on and "用你登入的瀏覽器" in on, on
+        # 被擋在驗證／登入頁：不能當成讀到了，要請使用者到登入視窗處理
+        w = fetch_url.run(url + "wall")
+        assert w.startswith(fetch_url.NO_TEXT) and "打開登入視窗" in w, w
+        # Chrome 自己的錯誤頁（連不上）：回報錯誤，不能把錯誤頁當正文
+        import socket
+        with socket.socket() as so:
+            so.bind(("127.0.0.1", 0))
+            dead = so.getsockname()[1]
+        dom, err = fetch_url._browser_dom(f"http://127.0.0.1:{dead}/", 30)
+        assert not dom and "打不開這個網址" in err and "ERR_CONNECTION_REFUSED" in err, (err, dom[:200])
+        # 登入視窗還開著（瀏覽器資料夾被占用）：先講清楚，不要等到讀回空的
+        fetch_url.PROFILE.mkdir(parents=True, exist_ok=True)
+        lock = fetch_url.PROFILE / "SingletonLock"
+        os.symlink(f"host-{os.getpid()}", lock)
+        try:
+            assert "登入視窗」還開著" in fetch_url._browser_dom(url, 10)[1]
+        finally:
+            os.remove(lock)
     finally:
         srv.shutdown()
         conf["browser"]["enabled"] = False
         conf_path.write_text(_j.dumps(conf, ensure_ascii=False), encoding="utf-8")
-    return "關閉時照實說讀不到；打開後用專用瀏覽器讀到 JavaScript 產生的正文"
+    return "關閉時照實說讀不到；打開後讀到 JavaScript 產生的正文；驗證頁、Chrome 錯誤頁、登入視窗沒關都會照實回報"
 
 
 def t_search_browser_fallback():
@@ -553,6 +577,23 @@ def t_attach_continue():
             time.sleep(0.1)
         again = reqs[n]["messages"][1]["content"]
         assert isinstance(again, list) and "看一下" in again[0]["text"], again
+        # 重新對話：從頭跑工作流（新的系統提示、只有兩則訊息），上一次的過程和結果放在任務裡當參考
+        n = len(reqs)
+        r = server.call("POST", f"/api/runs/{rid}/redo", {"input": "這次寫成表格"})
+        assert r["status"] == 200 and r["json"].get("started"), r
+        for _ in range(50):
+            if len(reqs) > n and not engine._running:
+                break
+            time.sleep(0.1)
+        msgs = reqs[n]["messages"]
+        task = msgs[1]["content"][0]["text"] if isinstance(msgs[1]["content"], list) else msgs[1]["content"]
+        assert [m["role"] for m in msgs[:2]] == ["system", "user"], [m["role"] for m in msgs]
+        assert "整理附件" in task and "這次寫成表格" in task and "上一次執行（參考用）" in task, task[:300]
+        assert "read_folder" in task and "季度營收" in task and "答覆" in task, "上一次的過程（工具結果）和結果要帶進去"
+        assert isinstance(msgs[1]["content"], list), "重新對話沒另外附圖片時，沿用上一次的附件"
+        with engine.db() as c:
+            redo_id = c.execute("SELECT MAX(id) FROM runs").fetchone()[0]
+        assert server.call("GET", f"/api/runs/{redo_id}")["json"]["run"]["reference"] == rid
         for bad in ({"folder": str(HOME / "nope")}, {"images": [str(folder / "note.txt")]}):
             try:
                 engine.check_attachments(bad)
@@ -562,7 +603,7 @@ def t_attach_continue():
     finally:
         srv.shutdown()
         engine._ctx.folders = []
-    return "圖片送到模型、資料夾只讀得到裡面、繼續沿用對話、重新生成照原本的輸入和附件"
+    return "圖片送到模型、資料夾只讀得到裡面、繼續沿用對話、重新對話帶上一次的過程和結果、重新生成照原本的輸入和附件"
 
 
 def t_permissions():

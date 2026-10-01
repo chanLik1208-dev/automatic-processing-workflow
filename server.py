@@ -213,6 +213,7 @@ class Api:
             att = params.get("attachments") or {}
             run["attachments"] = {"folder": att.get("folder") or "", "images": [os.path.basename(x) for x in att.get("images") or []]}
             run["parent"] = params.get("parent")
+            run["reference"] = params.get("reference")
             return self.send({"run": run, "steps": [dict(s) for s in steps]})
         self.send({"error": "not found"}, 404)
 
@@ -248,13 +249,16 @@ class Api:
                 return self.send({"ok": engine.open_system_settings(str(body.get("pane") or ""))})
             except Exception as e:
                 return self.send({"error": str(e)}, 400)
-        if len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] in ("continue", "regenerate"):
+        if len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] in ("continue", "regenerate", "redo"):
             if not parts[2].isdigit():
                 return self.send({"error": "紀錄編號不對"}, 400)
             try:
                 if parts[3] == "continue":
                     ok = engine.continue_run(int(parts[2]), body.get("input", ""), save_attachments(body),
                                              body.get("provider"), body.get("model"), body.get("depth"))
+                elif parts[3] == "redo":
+                    ok = engine.redo_run(int(parts[2]), body.get("input", ""), save_attachments(body),
+                                         body.get("provider"), body.get("model"))
                 else:
                     ok = engine.regenerate_run(int(parts[2]))
             except ValueError as e:
@@ -274,9 +278,13 @@ class Api:
                 return self.send({"error": "找不到 Chrome / Edge；可以在「PDF 用的瀏覽器」填路徑"}, 400)
             profile = engine.ROOT / "browser-profile"
             profile.mkdir(parents=True, exist_ok=True)
+            url = str(body.get("url") or "")
+            url = url if url.lower().startswith(("http://", "https://")) else "about:blank"   # 只開網頁，不開本機檔案
             subprocess.Popen([browser, f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check",
-                              "about:blank"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return self.send({"ok": True})
+                              url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            note = ("macOS 如果問「AutoWorkflow 想要修改你 Mac 上的 App」（App 管理），那是這個視窗的 Chrome 在自我更新；"
+                    "允許或不允許都能登入和讀網頁。" if sys.platform == "darwin" else "")
+            return self.send({"ok": True, "note": note, "pane": "app_management" if note else ""})
         if parts == ["api", "export"]:
             fmt, html = body.get("format"), body.get("html") or ""
             if fmt not in ("docx", "pdf") or not html or len(html) > 5_000_000:

@@ -197,7 +197,8 @@ def C(role):
 
 
 # ---------------------------------------------------------------- 權限（像 macOS 的 app 權限）
-PANE_TEXT = {"files": "打開「檔案與資料夾」設定", "full_disk": "打開「完整磁碟取用權限」設定", "notifications": "打開「通知」設定"}
+PANE_TEXT = {"files": "打開「檔案與資料夾」設定", "full_disk": "打開「完整磁碟取用權限」設定", "notifications": "打開「通知」設定",
+             "app_management": "打開「App 管理」設定"}
 
 
 class PermissionDialog(QDialog):
@@ -247,12 +248,12 @@ class PermissionDialog(QDialog):
         return {k: "allow" if b.isChecked() else "deny" for k, b in self.groups.items()}
 
 
-def show_perm_notes(parent, notes, ask_continue=False):
+def show_perm_notes(parent, notes, ask_continue=False, head="已經存好你的選擇。系統那邊的狀況："):
     """允許後系統那邊的狀況（測試通知、系統權限被擋）。ask_continue：問要不要接著執行，回傳 True/False。"""
     while True:
         box = QMessageBox(parent)
         box.setWindowTitle("權限")
-        box.setText("已經存好你的選擇。系統那邊的狀況：\n\n" + "\n\n".join(n["text"] for n in notes))
+        box.setText(head + "\n\n" + "\n\n".join(n["text"] for n in notes))
         panes = {}
         for n in notes:
             if n.get("pane") and n["pane"] not in panes.values():
@@ -969,15 +970,20 @@ class WorkflowTab(QWidget):
         crow = QHBoxLayout()
         self.cont_btn = QPushButton("繼續")
         self.cont_btn.clicked.connect(self.on_continue)
+        self.redo_btn = QPushButton("重新對話")
+        self.redo_btn.clicked.connect(self.on_redo)
         self.regen_btn = QPushButton("重新生成")
         self.regen_btn.clicked.connect(self.on_regenerate)
         crow.addWidget(self.cont_btn)
+        crow.addWidget(self.redo_btn)
         crow.addWidget(self.regen_btn)
-        crow.addWidget(label("附件、模型用上方執行列的「＋ 附件」「模型」。", "muted", wrap=False))
         crow.addStretch()
         cv.addWidget(self.cont_in)
         cv.addWidget(self.cont_note)
         cv.addLayout(crow)
+        cv.addWidget(label("繼續：接著同一段對話，加上框裡的新輸入。重新對話：帶著這次的過程和結果當參考，從頭重新跑一次工作流"
+                           "（框裡的字當新指示，可以留空）。重新生成：同樣的輸入和設定，再跑一次。"
+                           "附件、模型用上方執行列的「＋ 附件」「模型」。", "muted", size=12))
         self.cont.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.cont.hide()
         rv.addWidget(self.cont)
@@ -1096,7 +1102,8 @@ class WorkflowTab(QWidget):
                  f"<p style='color:{C('muted')}'>{when(r['started'])}{TRIGGER.get(r['trigger'], '手動')}開始{took}，"
                  f"使用 {esc(self.win.model_name(r['model'], r['provider']))}"
                  + (f"，篇幅「{DEPTH_LEVELS[r['depth']][0]}」" if r.get("depth") in DEPTH_LEVELS and r["depth"] != 3 else "")
-                 + (f"，接續 #{r['parent']}" if r.get("parent") else "") + "</p>"]
+                 + (f"，接續 #{r['parent']}" if r.get("parent") else "")
+                 + (f"，參考 #{r['reference']} 重新對話" if r.get("reference") else "") + "</p>"]
         att = r.get("attachments") or {}
         att_line = "；".join(x for x in (f"資料夾 {esc(att['folder'])}" if att.get("folder") else "",
                                          f"圖片 {'、'.join(esc(i) for i in att.get('images') or [])}" if att.get("images") else "") if x)
@@ -1129,11 +1136,11 @@ class WorkflowTab(QWidget):
         done = r["status"] != "running" and not str(r["workflow"]).startswith("skill:")   # skill 試用沒有工作流可以接續或重跑
         self.cont.setVisible(done)
         can = bool(r.get("can_continue"))
-        self.cont_in.setVisible(can)
         self.cont_btn.setVisible(can)
         self.cont_btn.setEnabled(True)
+        self.redo_btn.setEnabled(True)
         self.regen_btn.setEnabled(True)
-        self.cont_note.setText("" if can else "這筆是舊版跑的，沒有保存對話內容，不能接著繼續；可以重新生成。")
+        self.cont_note.setText("" if can else "這筆是舊版跑的，沒有保存對話內容，不能接著繼續；可以重新對話或重新生成。")
         self.cont_note.setVisible(not can)
         if same:
             apply()
@@ -1350,6 +1357,34 @@ class WorkflowTab(QWidget):
             self.win.toast("已重新生成，看上面「現在」那一區")
             self._after_run()
         post_perm(self, self.b, f"/api/runs/{r['id']}/regenerate", {}, done)
+
+    def on_redo(self):
+        """重新對話：帶著這筆紀錄的過程和結果，從頭再跑一次工作流（框裡的字當新指示，可以留空）。"""
+        r = (self.detail or {}).get("run") or {}
+        if not r.get("id"):
+            return
+        body = {"input": self.cont_in.text().strip(), **self.attach_btn.body()}
+        pm = self.run_model.get(self.sel_wf)
+        if pm:
+            body.update(provider=pm[0], model=pm[1])
+        self.redo_btn.setEnabled(False)
+        wf = self.sel_wf
+
+        def done(res):
+            if res and res.get("cancelled"):
+                self.redo_btn.setEnabled(True)
+                return
+            if res and res.get("error"):
+                QMessageBox.warning(self, "沒有開始", res["error"])
+                self.redo_btn.setEnabled(True)
+                return
+            self.cont_in.clear()
+            self.run_att.pop(wf, None)
+            self.run_model.pop(wf, None)
+            self.attach_btn.refresh()
+            self.win.toast("已帶著上一次的過程重新對話，看上面「現在」那一區")
+            self._after_run()
+        post_perm(self, self.b, f"/api/runs/{r['id']}/redo", body, done)
 
     def _after_run(self):
         self.sel_run = None
@@ -2055,8 +2090,11 @@ class SettingsTab(QScrollArea):
         self.num(f, "網頁最多讀幾字", "fetch.max_chars", 1000, 100000, "", "字")
         self.sw(f, "用我的瀏覽器讀網頁", "browser.enabled", "預設關閉。一般讀法拿不到正文（要執行 JavaScript 或要登入）時，改用這個程式專用的瀏覽器去讀；登入狀態來自下面的「登入瀏覽器」。只讀取頁面文字，不會點擊、輸入或付款。")
         bl = QPushButton("打開登入視窗")
-        bl.clicked.connect(lambda: self.b.post("/api/browser/login", {}, lambda r: self.win.toast(
-            "已打開登入視窗；登入完記得把視窗關掉" if r.get("ok") else r.get("error") or "打不開瀏覽器")))
+        def login_done(r):
+            self.win.toast("已打開登入視窗；登入完記得把視窗關掉" if r.get("ok") else r.get("error") or "打不開瀏覽器")
+            if r.get("ok") and r.get("note"):
+                show_perm_notes(self, [{"ok": True, "text": r["note"], "pane": r.get("pane")}], head="macOS 可能會問的權限：")
+        bl.clicked.connect(lambda: self.b.post("/api/browser/login", {}, login_done))
         f.addRow("登入瀏覽器", bl)
         f.addRow("", label("打開一個專用的瀏覽器視窗，在裡面登入需要的網站（例如淘寶），登入完把視窗關掉。這個視窗跟你平常的 Chrome 分開，不會用到你其他的登入。注意：部分網站（例如淘寶）的條款禁止自動化存取，建議一次不要讀太多頁。", "muted"))
         f = self.section(v, "通知與匯出")
