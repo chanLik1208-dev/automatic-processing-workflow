@@ -154,10 +154,16 @@ def _read_and_close(port, want):
     host = urllib.parse.urlparse(want).hostname or ""
     base = ".".join(host.split(".")[-2:])
     page = next((p for p in pages if base and base in (urllib.parse.urlparse(p["url"]).hostname or "")), pages[0])
-    got = _ws_call(page["webSocketDebuggerUrl"], "Runtime.evaluate",
-                   {"expression": "document.documentElement.outerHTML", "returnByValue": True})
-    html = ((got.get("result") or {}).get("result") or {}).get("value") or ""
-    return page["url"], html
+    ev = lambda expr: ((_ws_call(page["webSocketDebuggerUrl"], "Runtime.evaluate",
+                                 {"expression": expr, "returnByValue": True}).get("result") or {}).get("result") or {}).get("value")
+    # 按「完成」時頁面可能還在載入（或剛跳轉）：等它載完，再給腳本一點時間把內容畫出來，最多等 15 秒
+    # 還在跳轉時分頁裡是一份空的 about:blank，它也算「載完」：要等到真的網頁（http）載完
+    for _ in range(30):
+        if ev("location.protocol.startsWith('http') && document.readyState === 'complete'"):
+            break
+        time.sleep(0.5)
+    time.sleep(0.8)
+    return ev("location.href") or page["url"], ev("document.documentElement.outerHTML") or ""
 
 
 def run(url, reason=""):
