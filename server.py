@@ -44,6 +44,21 @@ def workflows_view():
     return out
 
 
+def pending_asks():
+    """模型正在等使用者協助的網頁（skills/ask_user_browser.py 寫在 asks/ 的檔案；ChatGPT 的工具在另一個行程，所以用檔案）。"""
+    out = []
+    for f in sorted((engine.ROOT / "asks").glob("*.json")):
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if d.get("status") != "waiting":
+            continue
+        live = engine.LIVE.get(d.get("run_id")) or {}
+        out.append({**d, "title": live.get("title") or live.get("workflow") or ""})
+    return out
+
+
 MAX_IMAGES, MAX_IMAGE_BYTES = 8, 10 * 1024 * 1024
 
 
@@ -176,6 +191,8 @@ class Api:
                               "quota": {n: engine.quota_summary(n) for n in conf["providers"]},
                               "quota_models": {f"{n}/{m}": engine.quota_summary(n, m) for n, p in conf["providers"].items()
                                                for m in dict.fromkeys([p.get("default_model") or ""] + (p.get("models") or []))}})
+        if u.path == "/api/asks":
+            return self.send(pending_asks())
         if u.path == "/api/update":
             return self.send(updater.status())
         if u.path == "/api/instance":
@@ -227,6 +244,15 @@ class Api:
     def _route_post(self, raw_path, body):
         u = urlparse(raw_path)
         parts = u.path.strip("/").split("/")
+        if len(parts) == 3 and parts[:2] == ["api", "asks"]:
+            # 模型請使用者協助打開網頁：使用者按「完成」或「跳過」
+            f = engine.ROOT / "asks" / f"{parts[2]}.json"
+            if not parts[2].isalnum() or not f.exists() or body.get("action") not in ("done", "skip"):
+                return self.send({"error": "這個請求已經結束了"}, 404)
+            d = json.loads(f.read_text(encoding="utf-8"))
+            d["status"] = body["action"]
+            f.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+            return self.send({"ok": True})
         if parts == ["api", "permissions"]:
             name = str(body.get("workflow") or "")
             if name not in engine.load_workflows() and not name.startswith("skill:"):

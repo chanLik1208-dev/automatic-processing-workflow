@@ -136,6 +136,8 @@ SETTING_DEFAULTS = {
     "fetch": {"max_chars": 6000},
     "notify": {"enabled": True},
     "export": {"browser_path": ""},
+    # 用我的瀏覽器：enabled 讀不到時改用專用瀏覽器；ask_user 被驗證／登入擋住時，讓模型請使用者在視窗裡處理（只限手動執行）
+    "browser": {"enabled": False, "ask_user": True},
     "readable_paths": ["{data}/reports/*"],
     # 自動模式：照順序挑第一個「可用、而且沒超過用量上限」的模型來源；跑到一半出錯就換下一個
     "auto": {"order": [{"provider": "claude", "model": "", "max_daily_tokens": 0, "max_daily_runs": 0},
@@ -773,6 +775,10 @@ def chat_codex(p, model, messages, tools, live, timeout=600):
                 "-c", f"{s}.env={{" + ",".join(f"{k}={json.dumps(v)}" for k, v in env.items()) + "}",
                 "-c", f'{s}.default_tools_approval_mode="approve"',     # 不設的話每次呼叫都要人工核准，會直接被擋
                 "-c", f"{s}.startup_timeout_sec=60"]                   # 打包成單一執行檔時，啟動要先解壓，比較慢
+        if "ask_user_browser" in names:
+            # 請使用者協助時工具會等人（最多 10 分鐘）：codex 預設一個工具 60 秒就放棄，整體時間也要放寬
+            cmd += ["-c", f"{s}.tool_timeout_sec=720"]
+            timeout += 720
     cmd.append("-")                                    # 對話內容從標準輸入讀（沒有長度限制）
     tmp = tempfile.mkdtemp(prefix="wf-cli-")
     proc = subprocess.Popen(cmd, cwd=tmp, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -1348,7 +1354,8 @@ PERMISSIONS = {
                "detail": "在你的桌面跳出通知。"},
     "browser": {"label": "用你的瀏覽器讀網頁", "skills": ["fetch_url", "web_search"], "gate": "inside",
                 "detail": "一般讀法拿不到內容、或搜尋被擋時，用程式專用的 Chrome / Edge 資料夾去讀"
-                          "（會帶著你在「登入視窗」登入過的帳號）。只讀頁面文字，不點擊、不輸入。"},
+                          "（會帶著你在「登入視窗」登入過的帳號）。只讀頁面文字，不點擊、不輸入。"
+                          "被驗證或登入擋住時，可能會打開瀏覽器視窗請你處理，你按「完成」後才讀那一頁（設定裡可以關掉）。"},
     "local_files": {"label": "讀本機檔案", "skills": ["tail_file"], "gate": "tool",
                     "detail": "讀設定裡「可讀取的路徑」列出的檔案（例如訓練或系統的記錄檔）。"},
     "create_workflow": {"label": "建立新的工作流", "skills": ["create_workflow"], "gate": "tool",
@@ -1715,6 +1722,10 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
             allowed = [s for s in allowed if s not in p["skills"]]
         why = "你沒有允許" if saved.get(k) == "deny" else "還沒問過你（排程執行時不會問）"
         perm_notes.append((k, p["label"], why))
+    # 被驗證／登入擋住時請使用者協助：只有手動執行（有人在看）、允許用瀏覽器、設定沒關掉時才給
+    if (trigger == "manual" and "browser" in granted and cfg("browser.ask_user", True) and "ask_user_browser" in skills
+            and {"fetch_url", "web_search"} & set(allowed) and "ask_user_browser" not in allowed):
+        allowed.append("ask_user_browser")
     tools = [{"type": "function", "function": skills[s].SPEC} for s in allowed]
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
@@ -1788,6 +1799,7 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
                    (name, provider, model or "", trigger, "running", time.time(), task, level, json.dumps(params, ensure_ascii=False)))
     _ctx.folders = [att["folder"]] if att["folder"] else []
     _ctx.perms = set(granted)
+    _ctx.run_id = run_id
     idx, tin, tout = 0, 0, 0
     live = LIVE[run_id] = {"run_id": run_id, "workflow": name, "title": wf.get("title", name),
                            "started": time.time(), "round": 0, "provider": provider, "model": model or "",
@@ -1913,6 +1925,7 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
             pass
         _ctx.folders = []
         _ctx.perms = None
+        _ctx.run_id = None
         LIVE.pop(run_id, None)
         _cancel.discard(run_id)
 
