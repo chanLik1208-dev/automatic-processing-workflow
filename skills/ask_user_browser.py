@@ -7,7 +7,8 @@ SPEC = {
                    "而且這頁對任務真的重要時才用；使用者也可能按「跳過」或沒有回應，那就照實說明拿不到。",
     "parameters": {"type": "object", "properties": {
         "url": {"type": "string", "description": "要請使用者打開的網址（http 或 https）"},
-        "reason": {"type": "string", "description": "一句話跟使用者說為什麼需要他、要他做什麼（例如「淘寶要求登入，請登入後停在商品頁」）"}},
+        "reason": {"type": "string", "description": "一句話跟使用者說為什麼需要他、要他做什麼（例如「淘寶要求登入，請登入後停在商品頁」）。"
+                                                     "需要評論的話請他先打開評論（例如「請點開『全部評價』再按完成」），程式不會替他點。"}},
         "required": ["url", "reason"]},
 }
 
@@ -46,67 +47,9 @@ def _cancelled(run_id):
     return bool(eng and run_id in getattr(eng, "_cancel", ()))
 
 
-# ---------- DevTools（只用來讀使用者停下來的那一頁、最後關掉視窗；不點、不打字） ----------
-
-def _json(port, path, method="GET"):
-    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method)
-    with urllib.request.urlopen(req, timeout=5) as r:
-        return json.loads(r.read())
-
-
-def _ws_call(ws_url, method, params=None, timeout=30):
-    """極簡 WebSocket：送一個 DevTools 指令、收它的回覆。標準庫沒有 WebSocket，所以自己做握手和分框。"""
-    u = urllib.parse.urlparse(ws_url)
-    s = socket.create_connection((u.hostname, u.port), timeout=timeout)
-    try:
-        key = base64.b64encode(os.urandom(16)).decode()
-        s.sendall((f"GET {u.path} HTTP/1.1\r\nHost: {u.hostname}:{u.port}\r\nUpgrade: websocket\r\n"
-                   f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
-        buf = b""
-        while b"\r\n\r\n" not in buf:
-            chunk = s.recv(4096)
-            if not chunk:
-                raise RuntimeError("瀏覽器沒有接受連線")
-            buf += chunk
-        head, buf = buf.split(b"\r\n\r\n", 1)
-        if b" 101 " not in head.split(b"\r\n")[0]:
-            raise RuntimeError("瀏覽器拒絕連線")
-        payload = json.dumps({"id": 1, "method": method, "params": params or {}}).encode()
-        n = len(payload)
-        hdr = bytes([0x81]) + (bytes([0x80 | n]) if n < 126 else bytes([0x80 | 126]) + struct.pack(">H", n)
-                                if n < 65536 else bytes([0x80 | 127]) + struct.pack(">Q", n))
-        mask = os.urandom(4)
-        s.sendall(hdr + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
-
-        def need(k):
-            nonlocal buf
-            while len(buf) < k:
-                chunk = s.recv(1 << 20)
-                if not chunk:
-                    raise RuntimeError("連線中斷")
-                buf += chunk
-            out, buf = buf[:k], buf[k:]
-            return out
-
-        msg = b""
-        while True:
-            b0, b1 = need(2)
-            ln = b1 & 0x7F
-            if ln == 126:
-                ln = struct.unpack(">H", need(2))[0]
-            elif ln == 127:
-                ln = struct.unpack(">Q", need(8))[0]
-            data = need(ln)
-            if b0 & 0x0F == 8:
-                raise RuntimeError("瀏覽器關閉了連線")
-            msg += data
-            if b0 & 0x80:                                 # 一則訊息結束
-                got = json.loads(msg)
-                msg = b""
-                if got.get("id") == 1:
-                    return got
-    finally:
-        s.close()
+# ---------- DevTools（只用來讀使用者停下來的那一頁、最後關掉視窗；不點、不打字）：跟 fetch_url 共用 ----------
+_fu = _fetch_url()
+_json, _ws_call = _fu.cdp_json, _fu.ws_call
 
 
 def _close(fu, port):
@@ -166,16 +109,9 @@ def _read_and_close(port, want):
     host = urllib.parse.urlparse(want).hostname or ""
     base = ".".join(host.split(".")[-2:])
     page = next((p for p in pages if base and base in (urllib.parse.urlparse(p["url"]).hostname or "")), pages[0])
-    ev = lambda expr: ((_ws_call(page["webSocketDebuggerUrl"], "Runtime.evaluate",
-                                 {"expression": expr, "returnByValue": True}).get("result") or {}).get("result") or {}).get("value")
-    # 按「完成」時頁面可能還在載入（或剛跳轉）：等它載完，再給腳本一點時間把內容畫出來，最多等 15 秒
-    # 還在跳轉時分頁裡是一份空的 about:blank，它也算「載完」：要等到真的網頁（http）載完
-    for _ in range(30):
-        if ev("location.protocol.startsWith('http') && document.readyState === 'complete'"):
-            break
-        time.sleep(0.5)
-    time.sleep(0.8)
-    return ev("location.href") or page["url"], ev("document.documentElement.outerHTML") or ""
+    # 按「完成」時頁面可能還在載入：等它載完，從頭捲到底讓評論、規格都載進來，再讀畫面上的文字（最多等 60 秒）
+    final, html, shown = _fu.read_rendered(page["webSocketDebuggerUrl"], time.time() + 60)
+    return final or page["url"], html, shown
 
 
 def run(url, reason=""):
@@ -221,7 +157,7 @@ def run(url, reason=""):
                "cancelled": "這次執行被停止了"}.get(status, "使用者沒有完成")
         return f"{fu.NO_TEXT}：{why}，沒有讀到 {url}。不要再請使用者協助同一頁，照實說明這頁拿不到。"
     try:
-        final, html = _read_and_close(port, url)
+        final, html, shown = _read_and_close(port, url)
     except Exception as e:
         return f"[skill 錯誤] 使用者按了完成，但讀不到那一頁：{e}"
     finally:
@@ -229,7 +165,8 @@ def run(url, reason=""):
     bad = fu._chrome_error(html)
     if bad:
         return f"{fu.NO_TEXT}：{bad}（使用者停在的頁面：{final}）"
-    got = fu._from_html(html, fu.default_chars(), final)
+    # 用畫面上實際顯示的文字（innerText）；拿不到才退回從 HTML 重組
+    got = fu.from_rendered(shown, html, fu.default_chars(), final) if shown.strip() else fu._from_html(html, fu.default_chars(), final)
     if got.startswith(fu.NO_TEXT):
         return f"{got}\n（使用者協助打開的頁面：{final}）"
     return (f"（使用者在瀏覽器裡協助打開的頁面：{final}）\n" + got)[:fu.default_chars() + 200]

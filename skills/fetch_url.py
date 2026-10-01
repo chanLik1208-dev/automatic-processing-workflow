@@ -247,72 +247,178 @@ def _wall(text):
     return len(text) < 1500 and bool(WALL.search(text))
 
 
-def _browser_dom(url, limit=60):
-    """回傳 (html, 錯誤訊息)。limit：最多等幾秒。"""
+# ---------- DevTools：開瀏覽器、把整頁瀏覽一遍（捲到底讓延遲載入的評論、圖片都出來）、讀畫面上的文字 ----------
+# 只做這幾件事：開網址、捲動、讀內容、關掉。不點擊、不輸入、不付款。DevTools 埠只聽本機（127.0.0.1）。
+
+def cdp_json(port, path, method="GET"):
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method)
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return json.loads(r.read())
+
+
+def ws_call(ws_url, method, params=None, timeout=30):
+    """極簡 WebSocket：送一個 DevTools 指令、收它的回覆。標準庫沒有 WebSocket，所以自己做握手和分框。"""
+    import base64, socket, struct
+    u = urllib.parse.urlparse(ws_url)
+    s = socket.create_connection((u.hostname, u.port), timeout=timeout)
+    try:
+        key = base64.b64encode(os.urandom(16)).decode()
+        s.sendall((f"GET {u.path} HTTP/1.1\r\nHost: {u.hostname}:{u.port}\r\nUpgrade: websocket\r\n"
+                   f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = s.recv(4096)
+            if not chunk:
+                raise RuntimeError("瀏覽器沒有接受連線")
+            buf += chunk
+        head, buf = buf.split(b"\r\n\r\n", 1)
+        if b" 101 " not in head.split(b"\r\n")[0]:
+            raise RuntimeError("瀏覽器拒絕連線")
+        payload = json.dumps({"id": 1, "method": method, "params": params or {}}).encode()
+        n = len(payload)
+        hdr = bytes([0x81]) + (bytes([0x80 | n]) if n < 126 else bytes([0x80 | 126]) + struct.pack(">H", n)
+                                if n < 65536 else bytes([0x80 | 127]) + struct.pack(">Q", n))
+        mask = os.urandom(4)
+        s.sendall(hdr + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
+
+        def need(k):
+            nonlocal buf
+            while len(buf) < k:
+                chunk = s.recv(1 << 20)
+                if not chunk:
+                    raise RuntimeError("連線中斷")
+                buf += chunk
+            out, buf = buf[:k], buf[k:]
+            return out
+
+        msg = b""
+        while True:
+            b0, b1 = need(2)
+            ln = b1 & 0x7F
+            if ln == 126:
+                ln = struct.unpack(">H", need(2))[0]
+            elif ln == 127:
+                ln = struct.unpack(">Q", need(8))[0]
+            data = need(ln)
+            if b0 & 0x0F == 8:
+                raise RuntimeError("瀏覽器關閉了連線")
+            msg += data
+            if b0 & 0x80:
+                got = json.loads(msg)
+                msg = b""
+                if got.get("id") == 1:
+                    return got
+    finally:
+        s.close()
+
+
+SCROLL_JS = ("(async()=>{const h=()=>Math.min(document.documentElement.scrollHeight,30000);"
+             "for(let y=0;y<h();y+=700){window.scrollTo(0,y);await new Promise(r=>setTimeout(r,200));}"
+             "window.scrollTo(0,h());await new Promise(r=>setTimeout(r,1200));window.scrollTo(0,0);return true})()")
+
+
+def read_rendered(ws_url, deadline):
+    """等網頁載完 → 從頭捲到底再捲回來（延遲載入的評論、規格、圖片都載進來）→ 回傳 (網址, HTML, 畫面上的文字)。"""
+    def ev(expr, timeout=15, wait=False):
+        got = ws_call(ws_url, "Runtime.evaluate", {"expression": expr, "returnByValue": True, "awaitPromise": wait},
+                      timeout=timeout)
+        return ((got.get("result") or {}).get("result") or {}).get("value")
+    # 跳轉中分頁是一份空的 about:blank，也算「載完」：要等到真的網頁（或 Chrome 的錯誤頁）載完
+    while time.time() < deadline:
+        try:
+            if ev("(location.protocol.startsWith('http')||location.protocol==='chrome-error:')"
+                  "&&document.readyState==='complete'", timeout=5):
+                break
+        except (OSError, RuntimeError):
+            pass
+        time.sleep(0.4)
+    # 捲動事件要在畫面更新時才送出，背景分頁不更新畫面：先把分頁拉到前面，捲動才會觸發延遲載入
+    try:
+        ws_call(ws_url, "Page.bringToFront", timeout=5)
+    except (OSError, RuntimeError):
+        pass
+    time.sleep(0.8)                                        # 讓網頁的腳本把內容畫出來
+    try:
+        ev(SCROLL_JS, timeout=max(5, min(60, deadline - time.time())), wait=True)
+    except (OSError, RuntimeError):
+        pass
+    return (ev("location.href") or "", ev("document.documentElement.outerHTML") or "",
+            ev("document.body ? document.body.innerText : ''") or "")
+
+
+def _browser_read(url, limit=60):
+    """用專用瀏覽器資料夾、看不見的視窗讀一頁：瀏覽一遍讓全部東西載入，再讀。回傳 (網址, HTML, 畫面上的文字, 錯誤訊息)。"""
     browser = find_browser()
     if not browser:
-        return "", "找不到 Chrome / Edge，沒辦法用瀏覽器讀"
+        return "", "", "", "找不到 Chrome / Edge，沒辦法用瀏覽器讀"
     PROFILE.mkdir(parents=True, exist_ok=True)
     if _profile_in_use():
-        return "", "「登入視窗」還開著（同一個瀏覽器資料夾一次只能一個瀏覽器用）：登入完把那個視窗整個關掉（macOS 要按 ⌘Q）再試"
+        return "", "", "", "「登入視窗」還開著（同一個瀏覽器資料夾一次只能一個瀏覽器用）：登入完把那個視窗整個關掉（macOS 要按 ⌘Q）再試"
+    port_file = PROFILE / "DevToolsActivePort"
+    try:
+        port_file.unlink()
+    except OSError:
+        pass
     # Linux 用 root 跑時（容器、CI）Chrome 不肯在沙盒裡啟動；一般使用者不會走到這裡
     root = ["--no-sandbox"] if sys.platform.startswith("linux") and hasattr(os, "geteuid") and os.geteuid() == 0 else []
     # 背景更新、同步、元件下載都關掉：只是讀一頁，不要順便去改 Chrome 本身（macOS 會當成「修改 App」來問）
     cmd = [browser, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", *root,
            "--disable-background-networking", "--disable-component-update", "--disable-sync",
-           f"--user-data-dir={PROFILE}", "--virtual-time-budget=10000", "--dump-dom", url]
+           f"--user-data-dir={PROFILE}", "--remote-debugging-port=0", "--window-size=1280,2000", "about:blank"]
     try:
         # 自己一個行程群組：結束時連 Chrome 的子行程（繪圖、網路）一起關掉，不會留在背景
-        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                 start_new_session=sys.platform != "win32")
     except OSError as e:
-        return "", f"瀏覽器開不起來：{e}"
-    # macOS 上 Chrome 印完網頁常常不會自己結束（匯出 PDF 也有同樣情況）：
-    # 邊讀邊收，看到 </html> 而且一秒多沒有新輸出，就當作讀完、把它關掉
-    chunks, err, last = [], [], [time.time()]
-
-    def pump(stream, into, mark):
-        for b in iter(lambda: stream.read1(65536) if hasattr(stream, "read1") else stream.read(65536), b""):
-            into.append(b)
-            if mark:
-                last[0] = time.time()
-
-    threads = [threading.Thread(target=pump, args=(proc.stdout, chunks, True), daemon=True),
-               threading.Thread(target=pump, args=(proc.stderr, err, False), daemon=True)]
-    for t in threads:
-        t.start()
+        return "", "", "", f"瀏覽器開不起來：{e}"
     deadline = time.time() + limit
-    while proc.poll() is None and time.time() < deadline:
-        if b"</html>" in b"".join(chunks[-3:]).lower() and time.time() - last[0] > 1.2:
-            break
-        time.sleep(0.2)
-    timed_out = proc.poll() is None and time.time() >= deadline
-    if sys.platform != "win32":
+    port = None
+    try:
+        while time.time() < deadline and proc.poll() is None:
+            try:
+                port = int(port_file.read_text().split()[0])
+                break
+            except (OSError, ValueError, IndexError):
+                time.sleep(0.1)
+        if not port:
+            why = proc.stderr.read(4000).decode("utf-8", "replace") if proc.poll() is not None else ""
+            last = [l for l in why.splitlines() if "ERROR" in l][-1:]
+            return "", "", "", "瀏覽器沒有啟動" + (f"（{last[0][-160:]}）" if last else "")
+        target = cdp_json(port, "/json/new?" + urllib.parse.quote(url, safe=""), method="PUT")
+        final, dom, text = read_rendered(target["webSocketDebuggerUrl"], deadline)
+    except Exception as e:
+        return "", "", "", f"瀏覽器讀取失敗：{e}"
+    finally:
+        if port:
+            try:
+                ws_call(cdp_json(port, "/json/version")["webSocketDebuggerUrl"], "Browser.close", timeout=5)
+            except Exception:
+                pass
         try:
-            os.killpg(proc.pid, 9)           # 子行程也一起（主行程已經結束時，子行程可能還在）
-        except OSError:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
             pass
-    elif proc.poll() is None:
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
-    proc.wait()
-    for t in threads:
-        t.join(timeout=2)
-    dom = b"".join(chunks).decode("utf-8", errors="replace")
-    if not dom.strip():
-        if timed_out:
-            return "", f"瀏覽器讀了 {limit} 秒還沒讀完"
-        # 同一個瀏覽器資料夾只能有一個瀏覽器在用：登入用的視窗還開著時，背景讀取會拿到空的
-        log = b"".join(err).decode("utf-8", errors="replace")
-        # Windows 的 Edge / Chrome 打不開網址時不印錯誤頁，只在錯誤輸出寫「Page load failed: net::ERR_…」
-        m = re.search(r"Page load failed: net::(ERR_[A-Z_]+)", log)
-        if m:
-            return "", _net_error(m.group(1))
-        why = [l for l in log.splitlines() if "ERROR" in l or "rror:" in l][-1:]
-        return "", "瀏覽器沒有回傳內容；如果「登入瀏覽器」的視窗還開著，先把它關掉再試" + (f"（{why[0][-160:]}）" if why else "")
+        if proc.poll() is None:
+            if sys.platform != "win32":
+                try:
+                    os.killpg(proc.pid, 9)
+                except OSError:
+                    pass
+            else:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+            proc.wait()
     bad = _chrome_error(dom)
     if bad:
-        return "", bad
-    return dom, ""
+        return final, "", "", bad
+    if not dom.strip():
+        return final, "", "", f"瀏覽器讀了 {limit} 秒還沒讀完" if time.time() >= deadline else "瀏覽器沒有回傳內容"
+    return final, dom, text, ""
+
+
+def _browser_dom(url, limit=60):
+    """回傳 (html, 錯誤訊息)：給需要 HTML 的地方用（例如搜尋結果頁的解析）。"""
+    _, dom, _, err = _browser_read(url, limit)
+    return dom, err
 
 
 def open_login_window(url="about:blank"):
@@ -341,11 +447,11 @@ def run(url, max_chars=None):
         out = f"{NO_TEXT}（HTTP {e.code}）"
     if not use_browser or not out.startswith(NO_TEXT):
         return out
-    # 一般讀法拿不到正文（要執行 JavaScript、要登入）：改用使用者登入過的瀏覽器
-    dom, err = _browser_dom(url)
+    # 一般讀法拿不到正文（要執行 JavaScript、要登入）：改用使用者登入過的瀏覽器，把整頁瀏覽一遍再讀畫面上的文字
+    final, dom, shown, err = _browser_read(url)
     if err:
         return out + f"\n（也試了用你的瀏覽器讀：{err}）"
-    got = _from_html(dom, max_chars, url)
+    got = from_rendered(shown, dom, max_chars, final or url) if shown.strip() else _from_html(dom, max_chars, final or url)
     if got.startswith(NO_TEXT):
         return got.replace("這類頁面通常要執行 JavaScript 才會出現內容", "用你的瀏覽器讀也沒有正文（可能要登入、被驗證擋住，或內容要點擊才出現）")
     if _wall(got):
@@ -490,6 +596,12 @@ def _from_html(raw, max_chars, url=""):
             f"（已略過 {hidden} 個一般人看不到的區塊）" if hidden else "",
             ("網站提供的結構化資料：\n" + "\n".join(data)) if data else ""]
     out = "\n".join(h for h in head if h)
+    tail = _image_tail(raw, body, url)
+    return (out + "\n---\n" + text if out else text)[:max(max_chars - len(tail), 500)] + tail
+
+
+def _image_tail(raw, body, url):
+    """結果最後的圖片清單（頁面主圖 + 正文圖片；正文圖少時整頁補）。"""
     pics = _images(body, url)
     if len(pics) < 3:                                    # 正文區塊裡圖少（例如商品頁的主圖在別的區塊）：整頁再找一次
         seen = {u for _, u in pics}
@@ -498,6 +610,30 @@ def _from_html(raw, max_chars, url=""):
     og = urllib.parse.urljoin(url, og) if og and url else og
     if og and og.lower().startswith(("http://", "https://")) and not IMG_SKIP.search(og) and all(u != og for _, u in pics):
         pics = [("頁面主圖", og)] + pics[:11]
-    tail = ("\n\n圖片（商品實拍、尺寸表、圖表等常有文字裡沒有的資訊；跟任務有關的用 view_image 看，不要每張都看）：\n" +
+    return ("\n\n圖片（商品實拍、尺寸表、圖表等常有文字裡沒有的資訊；跟任務有關的用 view_image 看，不要每張都看）：\n" +
             "\n".join(f"{i}. {alt or '（沒有說明）'} — {src}" for i, (alt, src) in enumerate(pics, 1))) if pics else ""
-    return (out + "\n---\n" + text if out else text)[:max(max_chars - len(tail), 500)] + tail
+
+
+def from_rendered(text, raw, max_chars, url=""):
+    """瀏覽器畫面上實際顯示的文字（innerText）＋原始 HTML（拿標題、結構化資料、圖片）。
+    要執行腳本才畫出來的網頁（淘寶的價格、評論）用這個比從 HTML 重組文字完整：看得到的才會在 innerText 裡。"""
+    data = _structured(raw)
+    vis, _ = _visible_only(raw)
+    title = _meta(vis, "og:title", "twitter:title")
+    if not title:
+        m = re.search(r"<title[^>]*>(.*?)</title>", vis, re.S | re.I)
+        title = html.unescape(m.group(1)).strip() if m else ""
+    seen, lines = set(), []
+    for l in (re.sub(r"[ \t　\xa0]+", " ", x).strip() for x in (text or "").split("\n")):
+        # 畫面上的文字本來就是給人看的：除了選單字眼和太短的碎片，都留下（價格、評論、規格常常很短）
+        if l and l not in seen and not MENU.search(l) and (len(l) >= 4 or DATA.search(l)):
+            seen.add(l)
+            lines.append(l)
+    body = "\n".join(lines)
+    if not body.strip():
+        return f"{NO_TEXT}（標題：{title or '無'}）。畫面上沒有文字，請換一個來源，不要當作已經讀過。"
+    head = "\n".join(h for h in (f"標題：{title}" if title else "",
+                                  ("網站提供的結構化資料：\n" + "\n".join(data)) if data else "") if h)
+    m = re.search(r"<body\b[^>]*>(.*)</body>", vis, re.S | re.I)
+    tail = _image_tail(vis, m.group(1) if m else vis, url)
+    return ((head + "\n---\n" if head else "") + body)[:max(max_chars - len(tail), 500)] + tail
