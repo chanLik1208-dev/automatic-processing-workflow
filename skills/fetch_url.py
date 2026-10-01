@@ -179,15 +179,67 @@ def find_browser():
     return next((c for c in cands if c and os.path.exists(c)), None)
 
 
+def _profile_in_use():
+    """登入視窗還開著嗎？同一個瀏覽器資料夾一次只能一個瀏覽器用：開著時背景讀取會被交給那個視窗、拿到空的。
+    Chrome 用 SingletonLock（指向「主機名-行程編號」的捷徑）標記；行程還活著才算。"""
+    lock = PROFILE / "SingletonLock"
+    try:
+        target = os.readlink(lock)
+    except OSError:
+        return False
+    try:
+        pid = int(target.rsplit("-", 1)[-1])
+        os.kill(pid, 0)
+        return True
+    except (ValueError, ProcessLookupError):
+        return False
+    except PermissionError:                     # 行程在、只是不是我們的
+        return True
+    except OSError:
+        return False
+
+
+# Chrome 自己的錯誤頁（打不開、憑證錯誤、斷線）：不是網站內容，不能當正文交給模型
+CHROME_ERROR = re.compile(r'id="main-frame-error"|class="interstitial-wrapper"|id="error-code"|chrome-error://|class="neterror"|jstcache.*?net::ERR_', re.I | re.S)
+NET_ERR = re.compile(r"net::(ERR_[A-Z_]+)|\b(ERR_[A-Z][A-Z_]{4,}|DNS_PROBE_[A-Z_]+)\b")
+
+
+def _chrome_error(dom):
+    if not CHROME_ERROR.search(dom[:200000]):
+        return ""
+    m = NET_ERR.search(dom)
+    code = (m.group(1) or m.group(2)) if m else "未知錯誤"
+    hint = {"ERR_NAME_NOT_RESOLVED": "網址的網域找不到", "DNS_PROBE_FINISHED_NXDOMAIN": "網址的網域找不到", "ERR_INTERNET_DISCONNECTED": "電腦沒有連上網路",
+            "ERR_CONNECTION_REFUSED": "網站拒絕連線", "ERR_CONNECTION_TIMED_OUT": "連線逾時",
+            "ERR_CERT_AUTHORITY_INVALID": "網站憑證不被信任（公司網路或防毒軟體攔截 HTTPS 時常見）",
+            "ERR_CERT_COMMON_NAME_INVALID": "網站憑證跟網址不符", "ERR_PROXY_CONNECTION_FAILED": "代理伺服器連不上",
+            "ERR_TOO_MANY_REDIRECTS": "網站一直轉址"}.get(code, "")
+    return f"瀏覽器打不開這個網址（{code}{'：' + hint if hint else ''}）"
+
+
+# 網站要求驗證或登入（滑塊、驗證碼、登入頁）：內容不是使用者要的，請使用者在登入視窗處理一次
+WALL = re.compile(r"滑块|滑塊|拖动|拖動|验证码|驗證碼|安全验证|安全驗證|人机验证|captcha|are you a robot|verify you are human|"
+                  r"unusual traffic|请登录|請登入|密码登录|密碼登入|扫码登录|掃碼登入|login\.taobao\.com|passport\.|/punish", re.I)
+
+
+def _wall(text):
+    """正文很短、又出現驗證或登入的字樣：判定為被擋在驗證／登入頁。"""
+    return len(text) < 1500 and bool(WALL.search(text))
+
+
 def _browser_dom(url, limit=60):
     """回傳 (html, 錯誤訊息)。limit：最多等幾秒。"""
     browser = find_browser()
     if not browser:
         return "", "找不到 Chrome / Edge，沒辦法用瀏覽器讀"
     PROFILE.mkdir(parents=True, exist_ok=True)
+    if _profile_in_use():
+        return "", "「登入視窗」還開著（同一個瀏覽器資料夾一次只能一個瀏覽器用）：登入完把那個視窗整個關掉（macOS 要按 ⌘Q）再試"
     # Linux 用 root 跑時（容器、CI）Chrome 不肯在沙盒裡啟動；一般使用者不會走到這裡
     root = ["--no-sandbox"] if sys.platform.startswith("linux") and hasattr(os, "geteuid") and os.geteuid() == 0 else []
+    # 背景更新、同步、元件下載都關掉：只是讀一頁，不要順便去改 Chrome 本身（macOS 會當成「修改 App」來問）
     cmd = [browser, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", *root,
+           "--disable-background-networking", "--disable-component-update", "--disable-sync",
            f"--user-data-dir={PROFILE}", "--virtual-time-budget=10000", "--dump-dom", url]
     try:
         # 自己一個行程群組：結束時連 Chrome 的子行程（繪圖、網路）一起關掉，不會留在背景
@@ -232,6 +284,9 @@ def _browser_dom(url, limit=60):
         # 同一個瀏覽器資料夾只能有一個瀏覽器在用：登入用的視窗還開著時，背景讀取會拿到空的
         why = [l for l in b"".join(err).decode("utf-8", errors="replace").splitlines() if "ERROR" in l or "rror:" in l][-1:]
         return "", "瀏覽器沒有回傳內容；如果「登入瀏覽器」的視窗還開著，先把它關掉再試" + (f"（{why[0][-160:]}）" if why else "")
+    bad = _chrome_error(dom)
+    if bad:
+        return "", bad
     return dom, ""
 
 
@@ -268,6 +323,10 @@ def run(url, max_chars=None):
     got = _from_html(dom, max_chars, url)
     if got.startswith(NO_TEXT):
         return got.replace("這類頁面通常要執行 JavaScript 才會出現內容", "用你的瀏覽器讀也沒有正文（可能要登入、被驗證擋住，或內容要點擊才出現）")
+    if _wall(got):
+        return (f"{NO_TEXT}：網站要求驗證或登入（用你的瀏覽器讀到的是驗證／登入頁）。"
+                "請使用者到設定頁按「打開登入視窗」，在那個視窗打開這個網址、完成登入或驗證，關掉視窗後再執行一次。"
+                f"不要把這頁當成已經讀過。\n（讀到的內容：{got[:300]}）")
     return ("（用你登入的瀏覽器讀取）\n" + got)[:max_chars]
 
 
