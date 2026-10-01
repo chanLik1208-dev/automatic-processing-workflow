@@ -398,8 +398,22 @@ def t_gemini_agy():
     engine.chat_cli(p, "", [{"role": "system", "content": "SYS"}, {"role": "user", "content": "看圖"}], tools, {"_images": [str(img)]})
     sent = _j.loads((HOME / "agy-input.txt").read_text(encoding="utf-8"))["message"]["content"]
     assert "## 圖片" in sent and "view_file" in sent, sent[-300:]
+    # 換模型：`agy models` 的清單（真的 agy 1.2.14 的格式：代號<Tab>名稱）要出現在選單；選的模型用 --model 傳給 agy
+    fake.write_text("#!/bin/sh\nd=\"$(dirname \"$0\")\"\n"
+                    "if [ \"$1\" = models ]; then echo 'Fetching available models...' >&2; "
+                    "printf 'gemini-3.1-pro-high\\tGemini 3.1 Pro (High)\\ngemini-3.8-flash-low\\tGemini 3.8 Flash (Low)\\n'; exit 0; fi\n"
+                    "echo \"$@\" > \"$d/agy-args.txt\"\ncat > /dev/null\n"
+                    f"echo '{_j.dumps(ok, ensure_ascii=False)}'\n")
+    raw = _j.loads((HOME / "config.json").read_text(encoding="utf-8"))
+    raw["providers"]["gemini"].update(path=str(fake), command="agy-not-on-path")   # 不要用到這台機器上真的 agy
+    (HOME / "config.json").write_text(_j.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    engine._agy_models.update(at=0, exe="")
+    st = engine.ping_provider("gemini")
+    assert st.get("ok") and {"gemini-3.1-pro-high", "gemini-3.8-flash-low"} <= set(st["models"]), st
+    engine.chat_cli(p, "gemini-3.1-pro-high", [{"role": "system", "content": "SYS"}, {"role": "user", "content": "x"}], tools, {})
+    assert "--model gemini-3.1-pro-high" in (HOME / "agy-args.txt").read_text(), (HOME / "agy-args.txt").read_text()
     assert "image-1.png" in (HOME / "agy-cwd.txt").read_text(), "圖片要複製到 agy 的工作資料夾"
-    return "舊設定換成 agy；從標準輸入送出；解析工具呼叫；格式錯誤時自動重試；圖片複製到工作資料夾給 view_file 開"
+    return "舊設定換成 agy；從標準輸入送出；解析工具呼叫；格式錯誤時自動重試；圖片複製到工作資料夾給 view_file 開；`agy models` 的模型出現在選單、選的模型用 --model 傳"
 
 
 def t_browser_read():
