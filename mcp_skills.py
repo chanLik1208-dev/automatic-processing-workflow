@@ -25,6 +25,7 @@ def serve():
     if "AW_PERMS" in os.environ:                                # 這次執行允許的權限（例如用使用者的瀏覽器）
         engine._ctx.perms = {k for k in os.environ["AW_PERMS"].split(",") if k}
     allowed = [n for n in names if n in skills]
+    engine._ctx.tools = set(allowed)
     calls = fails = 0
     viewed = []
     out = sys.stdout

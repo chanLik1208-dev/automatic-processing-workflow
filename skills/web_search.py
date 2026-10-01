@@ -29,6 +29,12 @@ def _browser_on():
     return eng.run_permission("browser") if eng and hasattr(eng, "run_permission") else True
 
 
+def _can_ask():
+    """這次執行能不能請使用者在瀏覽器裡協助（ask_user_browser 有開放）。"""
+    eng = sys.modules.get("engine")
+    return bool(eng and hasattr(eng, "run_has_tool") and eng.run_has_tool("ask_user_browser"))
+
+
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
 HEADERS = {"User-Agent": UA, "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
            "Accept-Language": "zh-TW,zh-HK;q=0.9,zh;q=0.8,en;q=0.7"}
@@ -211,8 +217,10 @@ def run(query, limit=None):
         # 一定要講清楚是「被擋」，不然模型會把「搜不到」當成「沒有這回事」寫進結論
         return (f"[搜尋被擋] {'、'.join(blocked)} 把這次搜尋當成機器人擋了，這不代表沒有相關資料。"
                 "不要據此下「查無資料」的結論；可以改用已知的網址直接讀，或在報告裡註明搜尋受阻。"
-                + (f"（也試了用使用者的瀏覽器搜尋：{browser_err or '一樣沒有結果'}。"
-                   f"如果有 ask_user_browser 工具，可以用它請使用者打開 {_bing_query_url(query)} 通過驗證後讀回結果）"
+                + (f"（也試了用使用者的瀏覽器搜尋：{browser_err or '一樣沒有結果'}。）"
+                   + (f"\n下一步：用 ask_user_browser 請使用者打開 {_bing_query_url(query)}、通過驗證，就能讀回搜尋結果"
+                      "（reason 寫「搜尋引擎要驗證，請通過後停在搜尋結果頁」）。使用者按跳過就不要再請他，改用已知網址或照實註明。"
+                      if _can_ask() else "")
                    if tried_browser
                    else "" if _browser_on() else
                    "（提示使用者：這個工作流沒有被允許「用你的瀏覽器讀網頁」，可以在工作流的權限裡允許）"

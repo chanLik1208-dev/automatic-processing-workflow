@@ -45,6 +45,12 @@ def _browser_on():
     return eng.run_permission("browser") if eng and hasattr(eng, "run_permission") else True
 
 
+def _can_ask():
+    """這次執行能不能請使用者在瀏覽器裡協助（ask_user_browser 有開放）。"""
+    eng = sys.modules.get("engine")
+    return bool(eng and hasattr(eng, "run_has_tool") and eng.run_has_tool("ask_user_browser"))
+
+
 def _meta(page, *names):
     for n in names:
         m = re.search(rf'<meta[^>]+(?:property|name)=["\']{re.escape(n)}["\'][^>]*content=["\']([^"\']+)', page, re.I) \
@@ -332,9 +338,10 @@ def run(url, max_chars=None):
     if got.startswith(NO_TEXT):
         return got.replace("這類頁面通常要執行 JavaScript 才會出現內容", "用你的瀏覽器讀也沒有正文（可能要登入、被驗證擋住，或內容要點擊才出現）")
     if _wall(got):
-        return (f"{NO_TEXT}：網站要求驗證或登入（用你的瀏覽器讀到的是驗證／登入頁）。"
-                "如果有 ask_user_browser 工具、而且這頁對任務重要，可以用它請使用者在瀏覽器視窗裡登入或通過驗證、"
-                "停在要讀的頁面後讀回來；沒有的話，請使用者到設定頁按「打開登入視窗」處理後再執行一次。"
+        nxt = (f"下一步：這頁對任務重要的話，用 ask_user_browser 請使用者打開 {url}、登入或通過驗證後停在要讀的頁面，就能讀回來；"
+               "使用者按跳過就不要再請他。" if _can_ask() else
+               "請使用者到設定頁按「打開登入視窗」，在那個視窗處理後再執行一次。")
+        return (f"{NO_TEXT}：網站要求驗證或登入（用你的瀏覽器讀到的是驗證／登入頁）。{nxt}"
                 f"不要把這頁當成已經讀過。\n（讀到的內容：{got[:300]}）")
     return ("（用你登入的瀏覽器讀取）\n" + got)[:max_chars]
 

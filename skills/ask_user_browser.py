@@ -29,6 +29,18 @@ def _run_id():
     return rid or int(os.environ.get("AW_MCP_RUN") or 0)
 
 
+def _notify(title, message):
+    """系統通知（macOS 通知中心、Windows 右下角）：使用者切到別的 App 時也知道要回來處理。
+    這是程式自己提醒使用者，不是模型在跳通知，所以不看工作流的「跳桌面通知」權限；設定頁的「桌面通知」關掉就不送。"""
+    try:
+        spec = importlib.util.spec_from_file_location("_aw_notify", pathlib.Path(__file__).with_name("notify.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.run(title, message)
+    except Exception as e:                               # 通知送不出去不影響協助本身（畫面上照樣有卡片）
+        return f"通知送不出去：{e}"
+
+
 def _cancelled(run_id):
     eng = sys.modules.get("engine")
     return bool(eng and run_id in getattr(eng, "_cancel", ()))
@@ -181,6 +193,7 @@ def run(url, reason=""):
     path = ASKS / f"{ask_id}.json"
     path.write_text(json.dumps({"id": ask_id, "run_id": rid, "url": url, "reason": str(reason or "")[:300],
                                 "status": "waiting", "created": time.time()}, ensure_ascii=False), encoding="utf-8")
+    _notify("AutoWorkflow 需要你協助", (str(reason or "") or "網站要求登入或驗證") + "。處理好後回到 AutoWorkflow 按「完成」。")
     status = "timeout"
     try:
         deadline = time.time() + WAIT_MINUTES * 60
