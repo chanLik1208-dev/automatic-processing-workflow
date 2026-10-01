@@ -68,6 +68,13 @@ def serve():
                             "請用你內建的 view_image 工具打開這個路徑來看圖片內容。")
                 engine.add_step(run_id, engine.next_idx(run_id), "tool", fn, json.dumps(args, ensure_ascii=False),
                                 text[:20000], int((time.time() - t0) * 1000))
+                if fn in ("fetch_url", "ask_user_browser") and not engine.tool_failed(text):
+                    # 讀到網頁就先下載前幾張圖（設定「每頁自動看幾張圖」）；codex 只能用它內建的 view_image 打開本機檔案
+                    auto = engine.auto_view(skills, text, viewed, run_id, lambda: engine.next_idx(run_id))
+                    if auto:
+                        viewed += [a[0] for a in auto]
+                        text += ("\n\n已自動下載這頁的前幾張圖片到本機，請用你內建的 view_image 工具逐一打開來看：\n" +
+                                 "\n".join(f"- {a[0]}（來源：{a[1]}）" for a in auto))
                 failed = engine.tool_failed(text)
                 fails = fails + 1 if failed else 0
                 if fails >= engine.cfg("limits.fail_streak", 3):
