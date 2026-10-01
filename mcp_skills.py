@@ -8,6 +8,7 @@ codex 會用 `AutoWorkflow --mcp-skills` 把這個伺服器開起來（原始碼
   AW_MCP_RUN    執行紀錄 id：每次工具呼叫都寫成一個步驟，監控頁照樣看得到過程
   AW_MCP_SKILLS 開放哪些 skill（逗號分隔）
   AW_MCP_MAX    最多呼叫幾次工具（對應工作流的 max_steps）
+  AW_PERMS      這次執行允許的權限（逗號分隔，見 engine.PERMISSIONS）
 stdout 只能輸出 JSON-RPC，其他訊息一律不能印。"""
 import json
 import os
@@ -21,6 +22,8 @@ def serve():
     names = [n for n in os.environ.get("AW_MCP_SKILLS", "").split(",") if n]
     max_calls = int(os.environ.get("AW_MCP_MAX", "12"))
     skills = engine.load_skills()
+    if "AW_PERMS" in os.environ:                                # 這次執行允許的權限（例如用使用者的瀏覽器）
+        engine._ctx.perms = {k for k in os.environ["AW_PERMS"].split(",") if k}
     allowed = [n for n in names if n in skills]
     calls = fails = 0
     viewed = []
@@ -55,7 +58,7 @@ def serve():
             else:
                 t0 = time.time()
                 text = engine.exec_tool(skills, allowed, fn, args)
-                text, img = engine.take_image(text, viewed)
+                text, img = engine.take_image(fn, text, viewed)
                 if img:
                     # codex 不會把 MCP 工具回傳的圖片交給 GPT（openai/codex#4819，只顯示 <image content>）；
                     # 它自己的 view_image 會（實測送出 input_image）。所以給路徑，請它用內建的 view_image 打開
