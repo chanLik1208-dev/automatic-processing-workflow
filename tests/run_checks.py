@@ -736,6 +736,13 @@ def t_ask_user_browser():
         engine.set_permissions("ask-check", {"browser": "allow"})
         engine.run_workflow("ask-check", "manual", "")
         assert "ask_user_browser" in tools(), tools()
+        assert "ask_user_browser" in reqs[-1]["messages"][0]["content"], "有這個工具時，系統提示要說被擋住時先請使用者協助"
+        # 被擋的訊息要明確說下一步（有工具才提，沒工具不能叫模型用不存在的工具）
+        engine._ctx.tools = {"fetch_url", "ask_user_browser"}
+        assert fetch_url._can_ask()
+        engine._ctx.tools = {"fetch_url"}
+        assert not fetch_url._can_ask()
+        engine._ctx.tools = None
         engine.run_workflow("ask-check", "schedule", "")
         assert "ask_user_browser" not in tools(), "排程執行沒有人可以協助，不能給這個工具"
         engine.set_permissions("ask-check", {"browser": "deny"})
@@ -764,6 +771,9 @@ def t_ask_user_browser():
     url = f"http://127.0.0.1:{site.server_address[1]}/item"
     os.environ["AW_TEST_HEADLESS"] = "1"                 # CI 沒有螢幕
     tool = engine.load_skills()["ask_user_browser"]
+    sent = []
+    real_notify = tool._notify
+    tool._notify = lambda title, message: sent.append((title, message))
     try:
         for action in ("done", "skip"):
             out = {}
@@ -782,12 +792,21 @@ def t_ask_user_browser():
                 assert "登入後才看得到的評論" in out["r"] and "使用者在瀏覽器裡協助打開" in out["r"], out
             else:
                 assert out["r"].startswith(fetch_url.NO_TEXT) and "跳過" in out["r"], out
+        assert len(sent) == 2 and "需要你協助" in sent[0][0] and "請登入後停在商品頁" in sent[0][1], sent
         assert not server.pending_asks() and not fetch_url._profile_in_use(), "結束後要清掉請求、關掉視窗"
+        # 設定裡關掉「桌面通知」：真的通知函式也要照設定不送
+        c2 = _j.loads((HOME / "config.json").read_text(encoding="utf-8"))
+        c2.setdefault("notify", {})["enabled"] = False
+        (HOME / "config.json").write_text(_j.dumps(c2, ensure_ascii=False), encoding="utf-8")
+        assert "關閉" in real_notify("t", "m"), "設定關掉桌面通知時不能送"
+        c2["notify"]["enabled"] = True
+        (HOME / "config.json").write_text(_j.dumps(c2, ensure_ascii=False), encoding="utf-8")
         assert server.call("POST", "/api/asks/nope", {"action": "done"})["status"] == 404
     finally:
+        tool._notify = real_notify
         site.shutdown()
         os.environ.pop("AW_TEST_HEADLESS", None)
-    return "只在手動 + 允許瀏覽器時給；按完成讀回使用者停下的那一頁、按跳過照實說拿不到；結束後視窗會關掉"
+    return "只在手動 + 允許瀏覽器時給；跳出時送系統通知；按完成讀回使用者停下的那一頁、按跳過照實說拿不到；結束後視窗會關掉"
 
 
 def t_web_images():
