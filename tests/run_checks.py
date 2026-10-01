@@ -412,8 +412,45 @@ def t_gemini_agy():
     assert st.get("ok") and {"gemini-3.1-pro-high", "gemini-3.8-flash-low"} <= set(st["models"]), st
     engine.chat_cli(p, "gemini-3.1-pro-high", [{"role": "system", "content": "SYS"}, {"role": "user", "content": "x"}], tools, {})
     assert "--model gemini-3.1-pro-high" in (HOME / "agy-args.txt").read_text(), (HOME / "agy-args.txt").read_text()
+    # 思考內容：agy 的輸出不給（實測 1.2.14 只回報 token 數），要從它存的對話檔讀（agy 內部的 protobuf 格式）
+    import sqlite3
+
+    def pb(field, data):
+        data = data.encode() if isinstance(data, str) else data
+        out, key, n = b"", (field << 3) | 2, len(data)
+        for v in (key, n):
+            while True:
+                b7 = v & 0x7F
+                v >>= 7
+                out += bytes([b7 | (0x80 if v else 0)])
+                if not v:
+                    break
+        return out + data
+    conv = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+    old_home = engine.AGY_HOME
+    engine.AGY_HOME = HOME / "agy-home"
+    (engine.AGY_HOME / "conversations").mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(engine.AGY_HOME / "conversations" / f"{conv}.db")
+    db.execute("CREATE TABLE steps (idx integer, step_type integer, step_payload blob)")
+    db.execute("INSERT INTO steps VALUES (0, 14, ?)", (pb(1, "使用者輸入"),))
+    db.execute("INSERT INTO steps VALUES (1, 15, ?)", (pb(2, "x") + pb(20, pb(1, "台北是首都。") + pb(3, "先列出重點：首都、101。")),))
+    db.commit()
+    db.close()
+    fake.write_text("#!/bin/sh\ncat > /dev/null\n"
+                    f"echo '{_j.dumps({'event': 'init', 'conversation_id': conv})}'\n"
+                    "echo '{\"event\":\"step_update\",\"step_update\":{\"step_type\":\"agent_response\",\"text_delta\":\"台北是首都。\"}}'\n"
+                    f"echo '{_j.dumps({'event': 'result', 'result': {'status': 'SUCCESS', 'response': '台北是首都。', 'usage': {}}}, ensure_ascii=False)}'\n")
+    try:
+        live = {}
+        r = engine.chat_cli(p, "", [{"role": "system", "content": "SYS"}, {"role": "user", "content": "x"}], [], live)
+        m = r["choices"][0]["message"]
+        assert m["reasoning_content"] == "先列出重點：首都、101。" and m["content"] == "台北是首都。", m
+        assert live.get("content") == "台北是首都。", "回答要邊寫邊顯示"
+        assert engine.agy_thoughts("../../etc/passwd") == "" and engine.agy_thoughts("ffffffff-0000") == ""
+    finally:
+        engine.AGY_HOME = old_home
     assert "image-1.png" in (HOME / "agy-cwd.txt").read_text(), "圖片要複製到 agy 的工作資料夾"
-    return "舊設定換成 agy；從標準輸入送出；解析工具呼叫；格式錯誤時自動重試；圖片複製到工作資料夾給 view_file 開；`agy models` 的模型出現在選單、選的模型用 --model 傳"
+    return "舊設定換成 agy；從標準輸入送出；解析工具呼叫；格式錯誤時自動重試；圖片複製到工作資料夾給 view_file 開；`agy models` 的模型出現在選單、選的模型用 --model 傳；思考內容從 agy 存的對話讀出來"
 
 
 def t_browser_read():
