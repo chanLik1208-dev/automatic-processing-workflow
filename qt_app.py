@@ -100,9 +100,11 @@ def result_summary(name, out):
         return True, out.replace("[skill 錯誤]", "出錯：")[:160]
     if re.match(r"^(找不到|抓不到|這個路徑不|沒有這個|只接受)", out):
         return True, out.splitlines()[0][:120]
-    if name == "view_image":
-        ok = out.startswith(("已取回圖片", "圖片已下載"))
-        return (not ok), ("已取回，給模型看" if ok else out.splitlines()[0][:120])
+    if name == "view_image":                              # 「（自動）」= 讀到網頁時程式自動看的那幾張
+        auto = out.startswith("（自動）")
+        o = out[len("（自動）"):] if auto else out
+        ok = o.startswith(("已取回圖片", "圖片已下載"))
+        return (not ok), (("自動取回，給模型看" if auto else "已取回，給模型看") if ok else (o.splitlines() or [""])[0][:120])
     if name in ("web_search", "read_rss"):
         n = len(re.findall(r"^\d+\. ", out, re.M))
         return (n == 0), (f"找到 {n} 筆" if n else "沒有結果")

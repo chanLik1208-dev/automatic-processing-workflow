@@ -616,7 +616,11 @@ function resultSummary(name, out) {
   out = out || "";
   if (out.startsWith("[skill 錯誤]")) return {err: true, text: out.replace("[skill 錯誤]", "出錯：")};
   if (/^(找不到|抓不到|這個路徑不|沒有這個|只接受)/.test(out)) return {err: true, text: out.split("\n")[0].slice(0, 120)};
-  if (name === "view_image") return /^(已取回圖片|圖片已下載)/.test(out) ? {text: "已取回，給模型看"} : {err: true, text: out.split("\n")[0].slice(0, 120)};
+  if (name === "view_image") {                              // 「（自動）」= 讀到網頁時程式自動看的那幾張
+    const auto = out.startsWith("（自動）"), o = out.replace(/^（自動）/, "");
+    return /^(已取回圖片|圖片已下載)/.test(o) ? {text: auto ? "自動取回，給模型看" : "已取回，給模型看"}
+                                           : {err: true, text: o.split("\n")[0].slice(0, 120)};
+  }
   if (name === "web_search") { const n = (out.match(/^\d+\. /gm) || []).length; return n ? {text: `找到 ${n} 筆`} : {err: true, text: "沒有結果"}; }
   if (name === "read_rss") return {text: `拿到 ${(out.match(/^\d+\. /gm) || []).length} 則`};
   if (name === "http_check") return {err: !out.startsWith("OK"), text: out.split("\n")[0].replace(/^(OK|DOWN|PROBLEM) \S+：/, m => m.startsWith("OK") ? "正常，" : "異常，")};

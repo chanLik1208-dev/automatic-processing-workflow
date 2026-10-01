@@ -825,11 +825,17 @@ def t_fetch_detail():
                  "price=199.00", "ratingValue=4.8", "reviewCount=2316"):
         assert want in out, f"少了「{want}」"
     assert "首页" not in out and "加入购物车" not in out, "選單、按鈕不該留下"
+    # 網址裡寫著很小的尺寸（淘寶的 -tps-172-108、縮圖 _60x60）：是徽章或縮圖，不要列出來浪費自動看圖的名額
+    tags = "".join(f'<img src="{u}">' for u in (
+        "https://gw.alicdn.com/i1/O1CN01_!!6000-2-tps-172-108.png_.webp", "https://img.alicdn.com/a.jpg_60x60.jpg",
+        "https://img.alicdn.com/i1/O1CN01o1_!!2222.jpg_760x760q90.jpg"))
+    got = [u for _, u in fetch_url._images(tags, "")]
+    assert got == ["https://img.alicdn.com/i1/O1CN01o1_!!2222.jpg_760x760q90.jpg"], got
     engine._ctx.fetch_chars = 30000
     assert fetch_url.default_chars() == 30000, "篇幅調高時要讀更多字"
     engine._ctx.fetch_chars = None
     assert engine.DEPTH[4]["fetch"] == 2 and engine.DEPTH[5]["fetch"] == 3
-    return "價格、規格、表格、短評論、結構化資料都有；選單按鈕拿掉；xhigh / max 讀 2 / 3 倍"
+    return "價格、規格、表格、短評論、結構化資料都有；選單按鈕、小徽章圖拿掉；xhigh / max 讀 2 / 3 倍"
 
 
 def t_web_images():

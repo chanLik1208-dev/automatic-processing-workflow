@@ -377,6 +377,9 @@ def _fetch(url, max_chars):
 IMG_SKIP = re.compile(r"logo|icon|avatar|sprite|pixel|spacer|blank|emoji|badge|tracking|beacon|/ads?/|banner|placeholder|loading", re.I)
 
 
+URL_SIZE = re.compile(r"(?:-tps-|[_-])(\d{2,4})[-x](\d{2,4})(?=[._q]|$)")
+
+
 def _images(fragment, base, limit=12):
     """正文裡的圖片（網址 + 說明），給模型挑著用 view_image 看。跳過圖示、logo、追蹤用的小圖、base64 內嵌圖。"""
     out, seen = [], set()
@@ -393,6 +396,9 @@ def _images(fragment, base, limit=12):
                 continue                                    # 太小的多半是圖示或追蹤點
         except ValueError:
             pass
+        m = URL_SIZE.search(src)
+        if m and min(int(m.group(1)), int(m.group(2))) < 200:
+            continue                                        # 網址裡寫著尺寸、而且很小（例如淘寶的 -tps-172-108）：徽章、按鈕圖
         full = urllib.parse.urljoin(base, src) if base else src
         if full in seen or not full.lower().startswith(("http://", "https://")):
             continue
