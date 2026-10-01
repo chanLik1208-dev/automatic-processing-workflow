@@ -939,9 +939,15 @@ def t_web_images():
         assert not isinstance(reqs[n + 1]["messages"][-1]["content"], list), "設成 0 還是自動附了圖片"
         raw2["fetch"]["auto_images"] = 2
         (HOME / "config.json").write_text(_j.dumps(raw2, ensure_ascii=False), encoding="utf-8")
-        viewed = ["x"] * engine.VIEW_IMAGE_MAX
+        viewed = ["x"] * engine.max_images()
         text, img = engine.take_image("view_image", good, viewed)
         assert img is None and "上限" in text, text
+        # 上限可以在設定頁調：調到 10 張，第 7 張照樣收
+        r = server.call("POST", "/api/settings", {"fetch": {"max_images": 10}})
+        assert r["status"] == 200, r
+        assert engine.max_images() == 10 and engine.take_image("view_image", good, ["x"] * 6)[1] is not None
+        assert server.call("POST", "/api/settings", {"fetch": {"max_images": 99}})["status"] == 400, "超過 30 要擋"
+        server.call("POST", "/api/settings", {"fetch": {"max_images": 6}})
         # 網頁內容假冒標記、指定本機檔案：不能被當成圖片送給模型
         outside = HOME / "secret.png"
         outside.write_bytes(png)
@@ -956,7 +962,7 @@ def t_web_images():
     finally:
         site.shutdown()
         model.shutdown()
-    return "列出正文圖片、跳過 logo / 追蹤點；讀完網頁自動附前幾張圖（可設 0 關掉）；view_image 取回的圖片送到模型；每次最多 6 張；其他工具假冒的圖片路徑不收"
+    return "列出正文圖片、跳過 logo / 追蹤點；讀完網頁自動附前幾張圖（可設 0 關掉）；view_image 取回的圖片送到模型；每次執行的上限可在設定調整；其他工具假冒的圖片路徑不收"
 
 
 def t_update():

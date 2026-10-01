@@ -3,7 +3,7 @@ import hashlib, importlib.util, pathlib, urllib.request
 SPEC = {
     "name": "view_image",
     "description": "看一張網路上的圖片（例如 fetch_url 列出的圖片網址）：下載後讓你直接看到圖片內容。"
-                   "只在圖片跟任務有關時用（例如商品實拍、圖表、截圖），不要每張都看；每次執行最多看 6 張。",
+                   "只在圖片跟任務有關時用（例如商品實拍、圖表、截圖），不要每張都看；每次執行能看的張數有上限（設定頁可調）。",
     "parameters": {"type": "object", "properties": {
         "url": {"type": "string", "description": "圖片網址（http 或 https）"}},
         "required": ["url"]},
