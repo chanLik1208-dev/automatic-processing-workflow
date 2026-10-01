@@ -133,7 +133,7 @@ SETTING_DEFAULTS = {
                "fail_streak": 3, "stall_seconds": 45},
     "lmstudio_guard": {"nan_watchdog": True, "raw_capture": True},
     "search": {"region": "tw-tzh", "limit": 8},
-    "fetch": {"max_chars": 10000, "auto_images": 2},      # auto_images：讀到網頁就自動給模型看前幾張圖（0 = 讓模型自己決定）
+    "fetch": {"max_chars": 10000, "auto_images": 2, "max_images": 6},      # auto_images：讀到網頁就自動給模型看前幾張圖（0 = 讓模型自己決定）
     "notify": {"enabled": True},
     "export": {"browser_path": ""},
     # 用我的瀏覽器：enabled 讀不到時改用專用瀏覽器；ask_user 被驗證／登入擋住時，讓模型請使用者在視窗裡處理（只限手動執行）
@@ -1632,7 +1632,15 @@ def _api_messages(messages):
     return out
 
 
-VIEW_IMAGE_MAX = 6
+VIEW_IMAGE_MAX = 6                                     # 預設值；實際用設定「每次執行最多看幾張圖」（fetch.max_images）
+
+
+def max_images():
+    """這次執行最多給模型看幾張網頁圖片（設定頁可調，1–30）。"""
+    try:
+        return max(1, min(30, int(cfg("fetch.max_images", VIEW_IMAGE_MAX))))
+    except (TypeError, ValueError):
+        return VIEW_IMAGE_MAX
 IMAGE_MARK = "[[AW_IMAGE]]"           # skills/view_image.py 回傳的開頭
 
 
@@ -1651,7 +1659,7 @@ def auto_view(skills, result, viewed, run_id, idx_fn):
         return []
     got = []
     for url in page_images(result)[:n]:
-        if len(viewed) + len(got) >= VIEW_IMAGE_MAX:
+        if len(viewed) + len(got) >= max_images():
             break
         t0 = time.time()
         out = exec_tool(skills, ["view_image"], "view_image", {"url": url})
@@ -1676,8 +1684,9 @@ def take_image(fn, result, viewed):
             or not os.path.isfile(real)):
         return "[skill 錯誤] view_image 回傳的圖片路徑不對，這張不看。", None
     path = real
-    if len(viewed) >= VIEW_IMAGE_MAX:
-        return f"[skill 錯誤] 這次執行已經看了 {VIEW_IMAGE_MAX} 張圖片，達到上限；用目前看過的資料繼續。", None
+    if len(viewed) >= max_images():
+        return (f"[skill 錯誤] 這次執行已經看了 {max_images()} 張圖片，達到設定的上限；用目前看過的資料繼續"
+                "（使用者可以在設定頁「每次執行最多看幾張圖」調高）。"), None
     return f"已取回圖片：{url}（{rest[0]}），附在下一則訊息給你看。", (path, url)
 
 

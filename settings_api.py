@@ -6,12 +6,12 @@ import engine
 LABELS = {"tick_seconds": "排程檢查間隔", "server.port": "監控頁 port", "limits.max_tokens": "單輪最多輸出",
           "limits.request_timeout": "API 逾時", "limits.cli_timeout": "訂閱 CLI 逾時", "limits.max_steps": "最多幾輪",
           "limits.fail_streak": "連續失敗幾次叫它停", "limits.stall_seconds": "卡住提示", "search.limit": "搜尋筆數",
-          "fetch.max_chars": "網頁最多讀幾字", "fetch.auto_images": "每頁自動看幾張圖"}
+          "fetch.max_chars": "網頁最多讀幾字", "fetch.auto_images": "每頁自動看幾張圖", "fetch.max_images": "每次執行最多看幾張圖"}
 NUM = {  # 路徑: (最小, 最大)
     "tick_seconds": (5, 3600), "server.port": (1024, 65535),
     "limits.max_tokens": (256, 65536), "limits.request_timeout": (30, 3600), "limits.cli_timeout": (30, 7200),
     "limits.max_steps": (1, 60), "limits.fail_streak": (1, 20), "limits.stall_seconds": (10, 3600),
-    "search.limit": (1, 15), "fetch.max_chars": (1000, 100000), "fetch.auto_images": (0, 6),
+    "search.limit": (1, 15), "fetch.max_chars": (1000, 100000), "fetch.auto_images": (0, 10), "fetch.max_images": (1, 30),
 }
 BOOL = ["lmstudio_guard.nan_watchdog", "lmstudio_guard.raw_capture", "notify.enabled", "update.auto_check", "update.auto_install", "search.native", "browser.enabled", "browser.ask_user"]
 TEXT = {"language": 40, "search.region": 20, "export.browser_path": 500}
