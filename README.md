@@ -57,7 +57,7 @@ python3 server.py                # 監控頁 http://127.0.0.1:8787
 
 **用我的瀏覽器讀網頁**（設定頁，預設關閉）：一般讀法拿不到正文的網頁（要執行 JavaScript、要登入），改用程式專用的 Chrome / Edge 資料夾去讀；先按「打開登入視窗」登入需要的網站。只讀取頁面文字，不會點擊、輸入或付款，也不碰你平常的瀏覽器。部分網站（例如淘寶）的條款禁止自動化存取，建議一次不要讀太多頁。
 
-**執行時的輸入**：輸入框可以換行（Enter 換行、Ctrl/⌘+Enter 執行）。旁邊「＋ 附件」可以各自附上**資料夾**（模型用 `read_folder` 讀裡面的檔案，只能讀、只限那次執行）和**圖片**（LM Studio 等 OpenAI 相容 API、ChatGPT 訂閱、Claude 訂閱都會一起送給模型；Gemini 訂閱目前不支援）。跑完的紀錄可以**繼續**（保留整段對話、加上新的輸入）或**重新生成**。
+**執行時的輸入**：輸入框可以換行（Enter 換行、Ctrl/⌘+Enter 執行）。旁邊「＋ 附件」可以各自附上**資料夾**（模型用 `read_folder` 讀裡面的檔案，只能讀、只限那次執行）和**圖片**（OpenAI 相容 API 直接送；ChatGPT 訂閱用 codex 的附圖參數；Claude 訂閱用圖片區塊；Gemini 訂閱放進 agy 的工作資料夾、由它內建的 view_file 打開——四種都用真的 CLI 實測過圖片確實送到模型）。讀網頁時 `fetch_url` 會列出正文裡的圖片，模型可以用 `view_image` 挑著看（每次執行最多 6 張）。跑完的紀錄可以**繼續**（保留整段對話、加上新的輸入）或**重新生成**。
 
 內建工具型 skill：`web_search`（DuckDuckGo，不需 key）、`fetch_url`（只取正文）、`github_repo`、`read_rss`、
 `http_check`、`system_status`、`tail_file`、`save_report`、`notify`、`create_workflow`、`use_skill` / `read_skill_file`。

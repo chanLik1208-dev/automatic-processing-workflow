@@ -23,6 +23,7 @@ def serve():
     skills = engine.load_skills()
     allowed = [n for n in names if n in skills]
     calls = fails = 0
+    viewed = []
     out = sys.stdout
     sys.stdout = sys.stderr                                     # skill 裡的 print 不能混進 JSON-RPC
 
@@ -54,6 +55,13 @@ def serve():
             else:
                 t0 = time.time()
                 text = engine.exec_tool(skills, allowed, fn, args)
+                text, img = engine.take_image(text, viewed)
+                if img:
+                    # codex 不會把 MCP 工具回傳的圖片交給 GPT（openai/codex#4819，只顯示 <image content>）；
+                    # 它自己的 view_image 會（實測送出 input_image）。所以給路徑，請它用內建的 view_image 打開
+                    viewed.append(img[0])
+                    text = (f"圖片已下載到本機：{img[0]}\n（來源：{img[1]}）\n"
+                            "請用你內建的 view_image 工具打開這個路徑來看圖片內容。")
                 engine.add_step(run_id, engine.next_idx(run_id), "tool", fn, json.dumps(args, ensure_ascii=False),
                                 text[:20000], int((time.time() - t0) * 1000))
                 failed = engine.tool_failed(text)

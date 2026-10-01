@@ -741,6 +741,8 @@ def chat_codex(p, model, messages, tools, live, timeout=600):
         names = [n for n in names if n != "web_search"]
     system = messages[0]["content"] + (
         ("\n\n要上網搜尋時，用你內建的網頁搜尋。" if native_search else "")
+        + ("\n\n看圖片：autoworkflow 的 view_image 會把圖片下載到本機並給你路徑，再用你內建的 view_image 工具打開那個路徑"
+           "（這是唯一允許你用的內建工具）。" if "view_image" in names else "")
         + ("\n\n搜尋、讀網頁、存檔都用 autoworkflow 提供的工具。不要用你內建的 shell、檔案、網頁搜尋工具。" if names and not native_search
            else "\n\n需要讀網頁或存檔時，用 autoworkflow 提供的工具。不要用你內建的 shell、檔案工具。" if names
            else "\n\n不要使用你內建的 shell、檔案工具。" if native_search
@@ -919,9 +921,6 @@ def chat_agy(p, model, system, messages, live, timeout=600, has_tools=True):
     agy 內建的搜尋和開網頁是 Google 的伺服器帶 AI 身分去抓，會被差別對待。
     agy 沒有系統提示的參數，所以系統提示放在輸入最前面；輸入用 stream-json 從標準輸入送（沒有命令列長度限制）。
     在空資料夾執行：它內建的檔案工具在工作區裡會自動核准，空資料夾用完就刪。"""
-    if live.get("_images"):
-        # agy 的輸入格式沒有公開的附圖方式：明講，讓備援（支援圖片的來源）接手，不要默默把圖片丟掉
-        raise RuntimeError("Gemini 訂閱（agy）目前還不能附圖片；這次請改用 ChatGPT / Claude 訂閱或支援圖片的本機模型")
     cmd = [cli_exe(p), "--input-format", "stream-json", "--output-format", "stream-json",
            "--sandbox", "--disable-slash-commands"]
     if model:
@@ -953,6 +952,17 @@ class AgyMalformedCall(RuntimeError):
 
 def _agy_once(p, cmd, prompt, live, timeout):
     tmp = tempfile.mkdtemp(prefix="wf-cli-")
+    images = live.get("_images") or []
+    if images:
+        # agy 的無介面模式不會展開 @路徑（實測只當成文字送出）；但它內建的 view_file 打開圖片時，會把圖片本身交給 Gemini。
+        # 所以把圖片複製到它的工作資料夾，請 Gemini 用 view_file 看（這是唯一允許它用的內建工具）
+        paths = []
+        for i, x in enumerate(images):
+            dst = os.path.join(tmp, f"image-{i + 1}{pathlib.Path(x).suffix.lower()}")
+            shutil.copyfile(x, dst)
+            paths.append(dst)
+        prompt += ("\n\n## 圖片\n對話裡提到的圖片在下面這些路徑（照出現順序）。要看圖片內容時，用你內建的 view_file 工具打開這些絕對路徑"
+                   "——這是唯一允許你使用的內建工具，而且只能用來看這些圖片：\n" + "\n".join(paths))
     proc = subprocess.Popen(cmd, cwd=tmp, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace")
     live["_proc"] = proc
@@ -1382,6 +1392,20 @@ def _api_messages(messages):
     return out
 
 
+VIEW_IMAGE_MAX = 6
+IMAGE_MARK = "[[AW_IMAGE]]"           # skills/view_image.py 回傳的開頭
+
+
+def take_image(result, viewed):
+    """view_image 的結果 → (給模型和紀錄看的文字, (圖片路徑, 網址) 或 None)。超過上限就不給圖。"""
+    if not isinstance(result, str) or not result.startswith(IMAGE_MARK):
+        return result, None
+    path, url, *rest = result[len(IMAGE_MARK):].split("\n") + ["", ""]
+    if len(viewed) >= VIEW_IMAGE_MAX:
+        return f"[skill 錯誤] 這次執行已經看了 {VIEW_IMAGE_MAX} 張圖片，達到上限；用目前看過的資料繼續。", None
+    return f"已取回圖片：{url}（{rest[0]}），附在下一則訊息給你看。", (path, url)
+
+
 def run_messages(run_id):
     """某次執行跑完時的完整對話（「繼續」用）；舊的執行沒有存就回傳 None。"""
     with db() as c:
@@ -1415,6 +1439,8 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
     allowed = [s for s in wf.get("skills", []) if s in skills]
     if att["folder"] and "read_folder" in skills and "read_folder" not in allowed:
         allowed.append("read_folder")                   # 附了資料夾就給讀資料夾的工具（只限這次、只限那個資料夾）
+    if "fetch_url" in allowed and "view_image" in skills and "view_image" not in allowed:
+        allowed.append("view_image")                    # 能讀網頁就能看網頁上的圖（fetch_url 會列出圖片網址）
     tools = [{"type": "function", "function": skills[s].SPEC} for s in allowed]
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
@@ -1486,6 +1512,7 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
                            "_folders": [att["folder"]] if att["folder"] else []}
 
     fails, first_err = 0, None
+    viewed = []                                        # 這次執行 view_image 看過的圖片（有上限）
     used = {mkey(provider, model)}                     # 這次執行用過的 (來源, 模型)，不會重複換回去
     if auto_note:
         add_step(run_id, idx, "note", "auto", "", auto_note)
@@ -1505,7 +1532,7 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
                 raise Cancelled()
             t0 = time.time()
             live.update(round=rnd + 1, phase="waiting", since=t0, reasoning="", content="", tool=None, last_token=None,
-                        provider=provider, model=model or "")
+                        provider=provider, model=model or "", _images=conversation_images(messages))
             try:
                 resp = chat(provider, model, messages, tools, live, max_tokens=wf.get("max_tokens"))
             except Cancelled:
@@ -1552,11 +1579,16 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
                       (time.time(), output, tin, tout, run_id))
                 return run_id
 
+            fetched = []                                      # 這一輪 view_image 取回的圖片：工具結果之後接一則訊息給模型看
             for call in calls:
                 fn = call["function"]["name"]
                 t0 = time.time()
                 live.update(phase="tool", since=t0, tool={"name": fn, "args": call["function"].get("arguments")})
                 result = exec_tool(skills, allowed, fn, call["function"].get("arguments"))
+                result, img = take_image(result, viewed)
+                if img:
+                    fetched.append(img)
+                    viewed.append(img[0])
                 add_step(run_id, idx, "tool", fn, call["function"].get("arguments"), result[:20000],
                          int((time.time() - t0) * 1000))
                 idx += 1
@@ -1567,6 +1599,10 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
                     result += (f"\n\n[系統] 已經連續失敗 {fails} 次。不要再猜網址或路徑，"
                                "直接回報你缺什麼資訊、哪裡失敗，然後結束。")
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": result[:40000]})
+            if fetched:
+                # 工具結果只能是文字：圖片接在所有工具結果之後，用一則使用者訊息帶給模型（每種模型來源都看得到）
+                messages.append({"role": "user", "_images": [x[0] for x in fetched],
+                                 "content": "（這是 view_image 取回的圖片，照順序：\n" + "\n".join(x[1] for x in fetched) + "）"})
 
         raise RuntimeError(f"超過 max_steps={wf['max_steps']} 還沒結束")
     except Cancelled:

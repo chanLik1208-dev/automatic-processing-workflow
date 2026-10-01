@@ -33,7 +33,8 @@ TRIGGER = {"schedule": "排程", "cli": "命令列"}
 SKILL_VERB = {"read_rss": "讀取新聞來源", "fetch_url": "打開網頁", "http_check": "檢查網站是否正常",
               "system_status": "檢查這台電腦的狀態", "tail_file": "讀取檔案", "use_skill": "載入知識",
               "read_skill_file": "翻閱章節", "save_report": "存成報告", "notify": "跳通知給你",
-              "create_workflow": "建立新的工作流", "web_search": "搜尋網路", "github_repo": "查看 GitHub repo"}
+              "create_workflow": "建立新的工作流", "web_search": "搜尋網路", "github_repo": "查看 GitHub repo",
+              "view_image": "看圖片", "read_folder": "讀資料夾"}
 
 
 def dur(sec):
@@ -88,7 +89,7 @@ def describe(name, args):
            "read_skill_file": f"{a.get('skill', '')} / {str(a.get('path', '')).rsplit('/', 1)[-1]}",
            "save_report": f"「{a.get('title', '')}」" if a.get("title") else "", "notify": f"「{a.get('message', '')}」" if a.get("message") else "",
            "web_search": f"「{a.get('query', '')}」" if a.get("query") else "", "github_repo": a.get("repo"),
-           "create_workflow": a.get("name")}.get(name) or ""
+           "create_workflow": a.get("name"), "view_image": a.get("url"), "read_folder": a.get("path") or "（整個資料夾）"}.get(name) or ""
     obj = re.sub(r"^https?://", "", str(obj))
     return verb, obj
 
@@ -99,6 +100,9 @@ def result_summary(name, out):
         return True, out.replace("[skill 錯誤]", "出錯：")[:160]
     if re.match(r"^(找不到|抓不到|這個路徑不|沒有這個|只接受)", out):
         return True, out.splitlines()[0][:120]
+    if name == "view_image":
+        ok = out.startswith(("已取回圖片", "圖片已下載"))
+        return (not ok), ("已取回，給模型看" if ok else out.splitlines()[0][:120])
     if name in ("web_search", "read_rss"):
         n = len(re.findall(r"^\d+\. ", out, re.M))
         return (n == 0), (f"找到 {n} 筆" if n else "沒有結果")
@@ -492,7 +496,7 @@ class AttachMenuButton(QToolButton):
         m.addAction("加入圖片…", self.pick_images)
         if a["images"]:
             m.addAction("全部移除", lambda: self._set("images", []))
-        hint2 = m.addAction("跟輸入一起給模型看（最多 8 張、每張 10 MB）；Gemini 訂閱目前不能附圖片")
+        hint2 = m.addAction("跟輸入一起給模型看（最多 8 張、每張 10 MB）；本機模型要選看得懂圖片的")
         hint2.setEnabled(False)
 
     def _set(self, key, val):

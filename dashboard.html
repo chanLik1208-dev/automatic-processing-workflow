@@ -577,6 +577,8 @@ const SKILL_TEXT = {
   notify:          a => ["跳通知給你", `「${a.message || ""}」`],
   create_workflow: a => ["建立新的工作流", a.name],
   web_search:      a => ["搜尋網路", `「${a.query || ""}」`],
+  view_image:      a => ["看圖片", host(a.url)],
+  read_folder:     a => ["讀資料夾", a.path || "（整個資料夾）"],
   github_repo:     a => ["查看 GitHub repo", (a.repo || "").replace(/^https?:\/\/github\.com\//, "") + (a.path ? " / " + a.path : "")],
 };
 function describe(name, args) {
@@ -588,6 +590,7 @@ function resultSummary(name, out) {
   out = out || "";
   if (out.startsWith("[skill 錯誤]")) return {err: true, text: out.replace("[skill 錯誤]", "出錯：")};
   if (/^(找不到|抓不到|這個路徑不|沒有這個|只接受)/.test(out)) return {err: true, text: out.split("\n")[0].slice(0, 120)};
+  if (name === "view_image") return /^(已取回圖片|圖片已下載)/.test(out) ? {text: "已取回，給模型看"} : {err: true, text: out.split("\n")[0].slice(0, 120)};
   if (name === "web_search") { const n = (out.match(/^\d+\. /gm) || []).length; return n ? {text: `找到 ${n} 筆`} : {err: true, text: "沒有結果"}; }
   if (name === "read_rss") return {text: `拿到 ${(out.match(/^\d+\. /gm) || []).length} 則`};
   if (name === "http_check") return {err: !out.startsWith("OK"), text: out.split("\n")[0].replace(/^(OK|DOWN|PROBLEM) \S+：/, m => m.startsWith("OK") ? "正常，" : "異常，")};
@@ -778,7 +781,7 @@ function attachMenu() {
         `<figure title="${esc(im.name)}"><img src="${im.url}" alt="${esc(im.name)}"><button data-att-rm="${i}" aria-label="移除">×</button></figure>`).join("")}</div>` : ""}
       <div class="row2"><label class="btn ghost" style="cursor:pointer">加入圖片…<input type="file" id="att-img" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden></label>
         ${a.images.length ? `<button class="ghost" data-att-clear="images">全部移除</button>` : ""}</div>
-      <div class="hint">跟輸入一起給模型看（最多 8 張、每張 10 MB）。Gemini 訂閱目前不能附圖片。</div>
+      <div class="hint">跟輸入一起給模型看（最多 8 張、每張 10 MB）。本機模型要選看得懂圖片的。</div>
     </div></div></div>`;
 }
 function attachBody() {
