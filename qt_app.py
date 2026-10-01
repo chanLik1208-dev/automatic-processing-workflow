@@ -34,7 +34,7 @@ SKILL_VERB = {"read_rss": "讀取新聞來源", "fetch_url": "打開網頁", "ht
               "system_status": "檢查這台電腦的狀態", "tail_file": "讀取檔案", "use_skill": "載入知識",
               "read_skill_file": "翻閱章節", "save_report": "存成報告", "notify": "跳通知給你",
               "create_workflow": "建立新的工作流", "web_search": "搜尋網路", "github_repo": "查看 GitHub repo",
-              "view_image": "看圖片", "read_folder": "讀資料夾"}
+              "view_image": "看圖片", "read_folder": "讀資料夾", "ask_user_browser": "請你協助打開網頁"}
 
 
 def dur(sec):
@@ -2089,6 +2089,7 @@ class SettingsTab(QScrollArea):
         self.sw(f, "GPT 用 OpenAI 官方搜尋", "search.native", "預設關閉。打開後 ChatGPT 訂閱改用 OpenAI 的搜尋：不會被搜尋引擎擋，但它帶著 AI 身分，擋 AI 的網站搜不到也讀不到，結果會偏向肯給 AI 看的來源。")
         self.num(f, "網頁最多讀幾字", "fetch.max_chars", 1000, 100000, "", "字")
         self.sw(f, "用我的瀏覽器讀網頁", "browser.enabled", "預設關閉。一般讀法拿不到正文（要執行 JavaScript 或要登入）時，改用這個程式專用的瀏覽器去讀；登入狀態來自下面的「登入瀏覽器」。只讀取頁面文字，不會點擊、輸入或付款。")
+        self.sw(f, "被擋住時請我協助", "browser.ask_user", "預設開啟（要先打開上面那項）。網站要求登入或驗證時，模型可以打開瀏覽器視窗請你處理，你停在要讀的頁面按「完成」才讀；只在手動執行時會問，排程執行不會。")
         bl = QPushButton("打開登入視窗")
         def login_done(r):
             self.win.toast("已打開登入視窗；登入完記得把視窗關掉" if r.get("ok") else r.get("error") or "打不開瀏覽器")
@@ -2455,6 +2456,34 @@ class MainWindow(QMainWindow):
             # 有工作在跑才密集地問；沒有就放慢，閒置時幾乎不花 CPU
             self.live_timer.setInterval(700 if live else 2500)
         self.backend.get("/api/live", got)
+        self.backend.get("/api/asks", self.show_asks)
+
+    def show_asks(self, asks):
+        """模型請你協助打開網頁（被驗證／登入擋住時）：每個請求跳一個不擋畫面的視窗，按「完成」才讀那一頁。"""
+        self.ask_boxes = getattr(self, "ask_boxes", {})
+        ids = {a["id"] for a in asks or []}
+        for aid in list(self.ask_boxes):
+            if aid not in ids:                                  # 已經結束（逾時、被停止、在別的介面按了）
+                self.ask_boxes.pop(aid).close()
+        for a in asks or []:
+            if a["id"] in self.ask_boxes:
+                continue
+            box = QMessageBox(self)
+            box.setWindowTitle("需要你協助")
+            box.setText(f"<b>需要你協助{('：' + esc(a['title'])) if a.get('title') else ''}</b><br>{esc(a.get('reason') or '網站要求登入或驗證')}")
+            box.setInformativeText(f"已經在瀏覽器視窗打開 {esc(a['url'])}。登入或完成驗證、停在要讀的那一頁後按「完成」；"
+                                   "程式只讀那一頁的文字，讀完視窗會自動關掉。")
+            done = box.addButton("完成，讀這一頁", QMessageBox.AcceptRole)
+            box.addButton("跳過", QMessageBox.RejectRole)
+            box.setModal(False)
+
+            def answer(_btn, aid=a["id"], box=box, done=done):
+                self.ask_boxes.pop(aid, None)
+                self.backend.post(f"/api/asks/{aid}", {"action": "done" if box.clickedButton() is done else "skip"})
+            box.buttonClicked.connect(answer)
+            self.ask_boxes[a["id"]] = box
+            box.show()
+            box.raise_()
 
     def quota(self, n):
         return quota_text(self.usage, n)

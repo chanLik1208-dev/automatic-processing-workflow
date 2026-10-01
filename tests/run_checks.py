@@ -699,6 +699,96 @@ def t_permissions():
     return "手動執行先問（428）；排程沒問過就不用並寫進紀錄；不允許的工具模型拿不到；刪工作流會忘掉；macOS 讀資料夾被擋時開始前就說明"
 
 
+def t_ask_user_browser():
+    """被驗證／登入擋住時請使用者協助：打開瀏覽器視窗、等使用者按「完成」、讀他停下來的那一頁；跳過就照實說拿不到。
+    只有手動執行、允許用瀏覽器、設定沒關時，模型才拿得到這個工具。"""
+    import http.server, json as _j, socketserver
+    sys.path.insert(0, str(HOME / "skills"))
+    import fetch_url
+    c = _j.loads((HOME / "config.json").read_text(encoding="utf-8"))
+    if os.environ.get("AW_TEST_BROWSER"):
+        c.setdefault("export", {})["browser_path"] = os.environ["AW_TEST_BROWSER"]
+    c.setdefault("browser", {}).update(enabled=True, ask_user=True)
+    (HOME / "config.json").write_text(_j.dumps(c, ensure_ascii=False), encoding="utf-8")
+    # 工具什麼時候給：手動 + 允許瀏覽器才有；排程、不允許、設定關掉都沒有
+    reqs = []
+
+    class Model(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            reqs.append(_j.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(b'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
+    model = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Model)
+    threading.Thread(target=model.serve_forever, daemon=True).start()
+    c["providers"]["fakeask"] = {"label": "假模型", "base_url": f"http://127.0.0.1:{model.server_address[1]}/v1",
+                                 "api_key": "x", "default_model": "fake"}
+    c.setdefault("lmstudio_guard", {}).update(nan_watchdog=False, raw_capture=False)
+    (HOME / "config.json").write_text(_j.dumps(c, ensure_ascii=False), encoding="utf-8")
+    tools = lambda: [t["function"]["name"] for t in reqs[-1].get("tools") or []]
+    try:
+        engine.save_workflow("ask-check", {"title": "協助檢查", "task": "讀商品頁", "provider": "fakeask",
+                                           "skills": ["fetch_url"], "schedule": {}}, create=True)
+        engine.set_permissions("ask-check", {"browser": "allow"})
+        engine.run_workflow("ask-check", "manual", "")
+        assert "ask_user_browser" in tools(), tools()
+        engine.run_workflow("ask-check", "schedule", "")
+        assert "ask_user_browser" not in tools(), "排程執行沒有人可以協助，不能給這個工具"
+        engine.set_permissions("ask-check", {"browser": "deny"})
+        engine.run_workflow("ask-check", "manual", "")
+        assert "ask_user_browser" not in tools(), "沒允許用瀏覽器就不能請使用者協助"
+    finally:
+        model.shutdown()
+    if not fetch_url.find_browser():
+        return "工具只在手動 + 允許瀏覽器時給（這台機器沒有 Chrome / Edge，略過開視窗的部分）"
+    page = ('<!doctype html><html><head><meta charset="utf-8"><title>商品</title></head><body><div id="a"></div>'
+            '<script>document.getElementById("a").innerHTML="<article><p>登入後才看得到的評論：外套尺寸偏小，建議買大一號，'
+            '顏色和照片一樣，物流很快。</p></article>"</script></body></html>')
+
+    class Site(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(page.encode("utf-8"))
+    site = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Site)
+    threading.Thread(target=site.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{site.server_address[1]}/item"
+    os.environ["AW_TEST_HEADLESS"] = "1"                 # CI 沒有螢幕
+    tool = engine.load_skills()["ask_user_browser"]
+    try:
+        for action in ("done", "skip"):
+            out = {}
+            t = threading.Thread(target=lambda: out.update(r=tool.run(url, "請登入後停在商品頁")))
+            t.start()
+            asks = []
+            for _ in range(150):
+                asks = server.pending_asks()
+                if asks or out:
+                    break
+                time.sleep(0.2)
+            assert asks and asks[0]["url"] == url and asks[0]["reason"] == "請登入後停在商品頁", (asks, out)
+            assert server.call("POST", f"/api/asks/{asks[0]['id']}", {"action": action})["json"]["ok"]
+            t.join(60)
+            if action == "done":
+                assert "登入後才看得到的評論" in out["r"] and "使用者在瀏覽器裡協助打開" in out["r"], out
+            else:
+                assert out["r"].startswith(fetch_url.NO_TEXT) and "跳過" in out["r"], out
+        assert not server.pending_asks() and not fetch_url._profile_in_use(), "結束後要清掉請求、關掉視窗"
+        assert server.call("POST", "/api/asks/nope", {"action": "done"})["status"] == 404
+    finally:
+        site.shutdown()
+        os.environ.pop("AW_TEST_HEADLESS", None)
+    return "只在手動 + 允許瀏覽器時給；按完成讀回使用者停下的那一頁、按跳過照實說拿不到；結束後視窗會關掉"
+
+
 def t_web_images():
     """網頁上的圖片：fetch_url 列出正文圖片（跳過 logo、追蹤點）→ 模型用 view_image 挑一張 → 圖片真的送到模型；每次最多 6 張。"""
     import base64 as _b64, http.server, json as _j, re as _re, socketserver
@@ -915,6 +1005,7 @@ def main():
     check("附件 / 繼續 / 重新生成", t_attach_continue)
     check("網頁圖片給模型看", t_web_images)
     check("權限（先問再執行）", t_permissions)
+    check("被擋住時請使用者協助", t_ask_user_browser)
     check("搜尋", t_search, skip=net)
     check("匯出 Word / PDF", t_export)
     check("檢查更新", t_update, skip=net)

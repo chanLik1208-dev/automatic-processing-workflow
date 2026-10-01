@@ -198,19 +198,22 @@ def run(query, limit=None):
         time.sleep(random.uniform(8, 12))
         _pace["last"] = time.time()
         results, engine, blocked = _search(query, limit)
-    browser_err = ""
+    browser_err, tried_browser = "", False
     if not results and blocked and _browser_on():
+        tried_browser = True
         try:
             results, engine = _search_browser(query, limit)
-        except Blocked:
-            results = []
+        except Blocked as e:
+            results, browser_err = [], f"{e} 也把瀏覽器當成機器人擋了"
         except Exception as e:
             browser_err = str(e)[:160]
     if not results and blocked:
         # 一定要講清楚是「被擋」，不然模型會把「搜不到」當成「沒有這回事」寫進結論
         return (f"[搜尋被擋] {'、'.join(blocked)} 把這次搜尋當成機器人擋了，這不代表沒有相關資料。"
                 "不要據此下「查無資料」的結論；可以改用已知的網址直接讀，或在報告裡註明搜尋受阻。"
-                + (f"（也試了用使用者的瀏覽器搜尋：{browser_err}）" if browser_err
+                + (f"（也試了用使用者的瀏覽器搜尋：{browser_err or '一樣沒有結果'}。"
+                   f"如果有 ask_user_browser 工具，可以用它請使用者打開 {_bing_query_url(query)} 通過驗證後讀回結果）"
+                   if tried_browser
                    else "" if _browser_on() else
                    "（提示使用者：這個工作流沒有被允許「用你的瀏覽器讀網頁」，可以在工作流的權限裡允許）"
                    if _cfg("browser.enabled", False) else
