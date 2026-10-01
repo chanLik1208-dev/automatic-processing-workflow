@@ -809,6 +809,29 @@ def t_ask_user_browser():
     return "只在手動 + 允許瀏覽器時給；跳出時送系統通知；按完成讀回使用者停下的那一頁、按跳過照實說拿不到；結束後視窗會關掉"
 
 
+def t_fetch_detail():
+    """網頁細節：價格、規格、表格、短評論、網站提供的結構化資料都要留下，選單不要；篇幅調高時讀更多字。"""
+    sys.path.insert(0, str(HOME / "skills"))
+    import fetch_url
+    long = "<p>" + "這款羽絨外套採用白鴨絨填充，適合秋冬通勤，收納後可以放進隨附的收納袋，買家普遍覺得保暖。" * 8 + "</p>"
+    page = ('<html><head><title>外套</title><script type="application/ld+json">{"@type":"Product","name":"輕量羽絨外套",'
+            '"offers":{"@type":"Offer","price":"199.00","priceCurrency":"CNY"},'
+            '"aggregateRating":{"@type":"AggregateRating","ratingValue":"4.8","reviewCount":"2316"}}</script></head>'
+            '<body><nav><a>首页</a><a>购物车</a></nav><main><div>¥199.00</div><div>月銷 2000+</div><div>颜色分类：黑色</div>'
+            '<table><tr><th>尺碼</th><th>胸圍</th></tr><tr><td>M</td><td>112cm</td></tr></table>'
+            f'<div>很保暖，偏大一碼</div><div>首页</div><button>加入购物车</button>{long}</main></body></html>')
+    out = fetch_url._from_html(page, 10000, "https://shop.example/item")
+    for want in ("¥199.00", "月銷 2000+", "颜色分类：黑色", "M | 112cm", "很保暖，偏大一碼",
+                 "price=199.00", "ratingValue=4.8", "reviewCount=2316"):
+        assert want in out, f"少了「{want}」"
+    assert "首页" not in out and "加入购物车" not in out, "選單、按鈕不該留下"
+    engine._ctx.fetch_chars = 30000
+    assert fetch_url.default_chars() == 30000, "篇幅調高時要讀更多字"
+    engine._ctx.fetch_chars = None
+    assert engine.DEPTH[4]["fetch"] == 2 and engine.DEPTH[5]["fetch"] == 3
+    return "價格、規格、表格、短評論、結構化資料都有；選單按鈕拿掉；xhigh / max 讀 2 / 3 倍"
+
+
 def t_web_images():
     """網頁上的圖片：fetch_url 列出正文圖片（跳過 logo、追蹤點）→ 模型用 view_image 挑一張 → 圖片真的送到模型；每次最多 6 張。"""
     import base64 as _b64, http.server, json as _j, re as _re, socketserver
@@ -1042,6 +1065,7 @@ def main():
     check("用我的瀏覽器讀網頁", t_browser_read)
     check("搜尋被擋改用瀏覽器", t_search_browser_fallback)
     check("附件 / 繼續 / 重新生成", t_attach_continue)
+    check("網頁細節（價格、規格、評論）", t_fetch_detail)
     check("網頁圖片給模型看", t_web_images)
     check("權限（先問再執行）", t_permissions)
     check("被擋住時請使用者協助", t_ask_user_browser)
