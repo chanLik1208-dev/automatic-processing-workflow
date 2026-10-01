@@ -208,7 +208,10 @@ def _chrome_error(dom):
     if not CHROME_ERROR.search(dom[:200000]):
         return ""
     m = NET_ERR.search(dom)
-    code = (m.group(1) or m.group(2)) if m else "未知錯誤"
+    return _net_error((m.group(1) or m.group(2)) if m else "未知錯誤")
+
+
+def _net_error(code):
     hint = {"ERR_NAME_NOT_RESOLVED": "網址的網域找不到", "DNS_PROBE_FINISHED_NXDOMAIN": "網址的網域找不到", "ERR_INTERNET_DISCONNECTED": "電腦沒有連上網路",
             "ERR_CONNECTION_REFUSED": "網站拒絕連線", "ERR_CONNECTION_TIMED_OUT": "連線逾時",
             "ERR_CERT_AUTHORITY_INVALID": "網站憑證不被信任（公司網路或防毒軟體攔截 HTTPS 時常見）",
@@ -282,7 +285,12 @@ def _browser_dom(url, limit=60):
         if timed_out:
             return "", f"瀏覽器讀了 {limit} 秒還沒讀完"
         # 同一個瀏覽器資料夾只能有一個瀏覽器在用：登入用的視窗還開著時，背景讀取會拿到空的
-        why = [l for l in b"".join(err).decode("utf-8", errors="replace").splitlines() if "ERROR" in l or "rror:" in l][-1:]
+        log = b"".join(err).decode("utf-8", errors="replace")
+        # Windows 的 Edge / Chrome 打不開網址時不印錯誤頁，只在錯誤輸出寫「Page load failed: net::ERR_…」
+        m = re.search(r"Page load failed: net::(ERR_[A-Z_]+)", log)
+        if m:
+            return "", _net_error(m.group(1))
+        why = [l for l in log.splitlines() if "ERROR" in l or "rror:" in l][-1:]
         return "", "瀏覽器沒有回傳內容；如果「登入瀏覽器」的視窗還開著，先把它關掉再試" + (f"（{why[0][-160:]}）" if why else "")
     bad = _chrome_error(dom)
     if bad:
