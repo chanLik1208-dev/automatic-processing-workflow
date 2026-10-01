@@ -132,14 +132,25 @@ def _visible_only(page):
 
 def _to_lines(fragment):
     fragment = re.sub(rf"(?is)<({DROP})\b.*?</\1>", " ", fragment)
+    fragment = re.sub(r"(?i)</t[dh]\s*>", " | ", fragment)   # 表格的格子用「|」隔開，整列留在同一行
     fragment = re.sub(rf"(?i)</?({BLOCK})\b[^>]*>|<br\s*/?>", "\n", fragment)
     text = html.unescape(re.sub(r"<[^>]+>", " ", fragment))
     return [re.sub(r"[ \t　\xa0]+", " ", l).strip() for l in text.split("\n")]
 
 
+# 很短但有資料的行：價格、數量和單位、日期、「欄位：值」、表格列（例如商品頁的「¥199.00」「顏色分類：黑色」「月銷 2000+」）
+DATA = re.compile(r"[¥￥$€£₩]\s*\d|\d\s*(?:元|块|塊|%|％|折|cm|mm|kg|g|ml|L|吋|寸|碼|码|件|个|個|天|週|周|月|年|日|分|星|萬|万|千|\+)"
+                  r"|\d{4}[-/.年]\d{1,2}|^[^\s：:|]{1,12}[：:]\s*\S|\S\s\|\s\S")
+MENU = re.compile(r"^(首页|首頁|登录|登入|注册|註冊|购物车|購物車|收藏|分享|客服|返回|更多|下载|下載|关注|關注|搜索|搜尋)\b")
+
+
 def _keep(line):
-    # 選單項目通常很短、沒有標點；正文是有標點的句子
-    return len(line) >= 40 or (len(line) >= 12 and SENTENCE.search(line))
+    # 選單項目通常很短、沒有標點；正文是有標點的句子。短的行只留帶著資料的（價格、規格、日期、表格）
+    if len(line) >= 40 or (len(line) >= 12 and SENTENCE.search(line)):
+        return True
+    if len(line) >= 6 and re.search(r"[，。！？；]", line) and not MENU.search(line):
+        return True                                       # 短評論（「很保暖，偏大一碼」）：選單幾乎不會有中文標點
+    return 2 <= len(line) <= 200 and bool(DATA.search(line)) and not MENU.search(line)
 
 
 def _pdf(data, max_chars):
@@ -318,7 +329,7 @@ NO_TEXT = "抓不到這個網頁的正文"
 
 
 def run(url, max_chars=None):
-    max_chars = int(max_chars or _cfg("fetch.max_chars", 6000))
+    max_chars = int(max_chars or default_chars())
     if not url.lower().startswith(("http://", "https://")):
         return "只接受 http:// 或 https:// 網址"
     use_browser = _browser_on()
@@ -392,7 +403,51 @@ def _images(fragment, base, limit=12):
     return out
 
 
+def default_chars():
+    """這次讀網頁最多幾字：設定值；篇幅調到 xhigh / max 時主程式會放大（讀得更細）。"""
+    eng = sys.modules.get("engine")
+    got = getattr(getattr(eng, "_ctx", None), "fetch_chars", None) if eng else None
+    return int(got or os.environ.get("AW_FETCH_CHARS") or _cfg("fetch.max_chars", 10000))
+
+
+def _structured(raw):
+    """網站自己提供的結構化資料（schema.org JSON-LD）：商品的價格、評分、評論數、品牌等，比從畫面上抓更準。"""
+    out = []
+
+    def walk(o):
+        if isinstance(o, list):
+            for x in o:
+                walk(x)
+            return
+        if not isinstance(o, dict):
+            return
+        t = o.get("@type")
+        t = " ".join(t) if isinstance(t, list) else str(t or "")
+        if any(k in t for k in ("Product", "Offer", "AggregateRating", "Review", "Book", "Recipe", "Event", "Article")):
+            parts = []
+            for k in ("name", "brand", "sku", "price", "lowPrice", "highPrice", "priceCurrency", "availability",
+                      "ratingValue", "reviewCount", "ratingCount", "datePublished", "author", "reviewBody", "description"):
+                v = o.get(k)
+                if isinstance(v, dict):
+                    v = v.get("name") or v.get("ratingValue")
+                if v not in (None, "", []) and not isinstance(v, (dict, list)):
+                    parts.append(f"{k}={str(v).strip()[:300]}")
+            if parts:
+                out.append(f"{t}：" + "；".join(parts))
+        for v in o.values():
+            if isinstance(v, (dict, list)):
+                walk(v)
+
+    for block in re.findall(r"(?is)<script[^>]*application/ld\+json[^>]*>(.*?)</script>", raw)[:10]:
+        try:
+            walk(json.loads(html.unescape(block.strip())))
+        except ValueError:
+            continue
+    return out[:15]
+
+
 def _from_html(raw, max_chars, url=""):
+    data = _structured(raw)
     raw, hidden = _visible_only(raw)
 
     title = _meta(raw, "og:title", "twitter:title")
@@ -426,7 +481,8 @@ def _from_html(raw, max_chars, url=""):
                 "請換一個來源，不要當作已經讀過。")
     head = [f"標題：{title}" if title else "", f"日期：{date}" if date else "",
             f"摘要：{desc}" if desc and desc.rstrip(".…")[:40] not in text else "",
-            f"（已略過 {hidden} 個一般人看不到的區塊）" if hidden else ""]
+            f"（已略過 {hidden} 個一般人看不到的區塊）" if hidden else "",
+            ("網站提供的結構化資料：\n" + "\n".join(data)) if data else ""]
     out = "\n".join(h for h in head if h)
     pics = _images(body, url)
     if len(pics) < 3:                                    # 正文區塊裡圖少（例如商品頁的主圖在別的區塊）：整頁再找一次

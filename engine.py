@@ -133,7 +133,7 @@ SETTING_DEFAULTS = {
                "fail_streak": 3, "stall_seconds": 45},
     "lmstudio_guard": {"nan_watchdog": True, "raw_capture": True},
     "search": {"region": "tw-tzh", "limit": 8},
-    "fetch": {"max_chars": 6000, "auto_images": 2},      # auto_images：讀到網頁就自動給模型看前幾張圖（0 = 讓模型自己決定）
+    "fetch": {"max_chars": 10000, "auto_images": 2},      # auto_images：讀到網頁就自動給模型看前幾張圖（0 = 讓模型自己決定）
     "notify": {"enabled": True},
     "export": {"browser_path": ""},
     # 用我的瀏覽器：enabled 讀不到時改用專用瀏覽器；ask_user 被驗證／登入擋住時，讓模型請使用者在視窗裡處理（只限手動執行）
@@ -769,7 +769,8 @@ def chat_codex(p, model, messages, tools, live, timeout=600):
         exe, args = _mcp_command()
         env = {"AW_MCP_RUN": str(live["run_id"]), "AW_MCP_SKILLS": ",".join(names),
                "AW_MCP_MAX": str(live.get("_max_steps", 12)), "AUTOWORKFLOW_HOME": str(ROOT),
-               "AW_FOLDERS": os.pathsep.join(live.get("_folders") or []), "AW_PERMS": ",".join(live.get("_perms") or [])}
+               "AW_FOLDERS": os.pathsep.join(live.get("_folders") or []), "AW_PERMS": ",".join(live.get("_perms") or []),
+               "AW_FETCH_CHARS": str(getattr(_ctx, "fetch_chars", None) or "")}
         s = "mcp_servers.autoworkflow"
         cmd += ["-c", f"{s}.command={json.dumps(exe)}", "-c", f"{s}.args={json.dumps(args)}",
                 "-c", f"{s}.env={{" + ",".join(f"{k}={json.dumps(v)}" for k, v in env.items()) + "}",
@@ -1287,10 +1288,10 @@ DEPTH = {
         "note": "最後的回覆精簡：約 500–800 字，重點條列、每點一兩句說明，省略次要細節。",
         "sources": "讀 2–3 個來源就好。"},
     3: {"label": "high", "hint": "預設：照工作流原本的寫法", "note": None},
-    4: {"label": "xhigh", "hint": "約 1500–3000 字，交叉比對", "steps": 6, "tokens": 8192,
+    4: {"label": "xhigh", "hint": "約 1500–3000 字，交叉比對", "steps": 6, "tokens": 8192, "fetch": 2,
         "note": "最後的回覆要深入：約 1500–3000 字，分段加小標題。不只摘要，要交代背景、原因和影響，指出還不確定的地方。",
         "sources": "至少讀 4–6 個來源，比較不同來源的說法，重要的說法要交叉比對。"},
-    5: {"label": "max", "hint": "約 3000–6000 字的完整報告", "steps": 12, "tokens": 16384,
+    5: {"label": "max", "hint": "約 3000–6000 字的完整報告", "steps": 12, "tokens": 16384, "fetch": 3,
         "note": "最後的回覆寫成完整的報告：約 3000–6000 字，分章節加小標題，依序是摘要、背景、分面向的深入分析、"
                 "各方觀點比較、數據與證據、風險與限制、結論與建議。",
         "sources": "讀 6–10 個來源，盡量包含一手資料（官方文件、原始公告、論文），每個關鍵說法都標出處。"},
@@ -1839,6 +1840,8 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
     _ctx.folders = [att["folder"]] if att["folder"] else []
     _ctx.perms = set(granted)
     _ctx.run_id = run_id
+    # 篇幅調高時網頁讀得更細（xhigh 2 倍、max 3 倍），最多 60,000 字
+    _ctx.fetch_chars = min(60000, int(cfg("fetch.max_chars", 10000)) * DEPTH[level].get("fetch", 1))
     _ctx.tools = set(allowed)                           # skill 要知道這次有沒有某個工具（例如能不能請使用者協助）
     idx, tin, tout = 0, 0, 0
     live = LIVE[run_id] = {"run_id": run_id, "workflow": name, "title": wf.get("title", name),
@@ -1977,6 +1980,7 @@ def run_workflow(name, trigger="manual", extra_input="", wf=None, depth=None, at
         _ctx.perms = None
         _ctx.run_id = None
         _ctx.tools = None
+        _ctx.fetch_chars = None
         LIVE.pop(run_id, None)
         _cancel.discard(run_id)
 

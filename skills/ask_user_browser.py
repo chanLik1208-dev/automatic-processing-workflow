@@ -229,7 +229,7 @@ def run(url, reason=""):
     bad = fu._chrome_error(html)
     if bad:
         return f"{fu.NO_TEXT}：{bad}（使用者停在的頁面：{final}）"
-    got = fu._from_html(html, int(fu._cfg("fetch.max_chars", 6000)), final)
+    got = fu._from_html(html, fu.default_chars(), final)
     if got.startswith(fu.NO_TEXT):
         return f"{got}\n（使用者協助打開的頁面：{final}）"
-    return (f"（使用者在瀏覽器裡協助打開的頁面：{final}）\n" + got)[:int(fu._cfg("fetch.max_chars", 6000)) + 200]
+    return (f"（使用者在瀏覽器裡協助打開的頁面：{final}）\n" + got)[:fu.default_chars() + 200]

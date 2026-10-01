@@ -62,7 +62,7 @@ python3 server.py                # 監控頁 http://127.0.0.1:8787
 
 **執行時的輸入**：輸入框可以換行（Enter 換行、Ctrl/⌘+Enter 執行）。旁邊「＋ 附件」可以各自附上**資料夾**（模型用 `read_folder` 讀裡面的檔案，只能讀、只限那次執行）和**圖片**（OpenAI 相容 API 直接送；ChatGPT 訂閱用 codex 的附圖參數；Claude 訂閱用圖片區塊；Gemini 訂閱放進 agy 的工作資料夾、由它內建的 view_file 打開——四種都用真的 CLI 實測過圖片確實送到模型）。讀網頁時 `fetch_url` 會列出頁面主圖和正文裡的圖片，模型可以用 `view_image` 挑著看；模型常常只讀文字不看圖，所以預設讀到網頁就自動把前 2 張圖附給它看（設定「每頁自動看幾張圖」，0 = 讓模型自己決定；每次執行最多 6 張）。跑完的紀錄可以**繼續**（保留整段對話、加上新的輸入）、**重新對話**（帶著上一次的過程和結果當參考，從頭重新跑一次工作流；框裡的字當新指示，可以留空）或**重新生成**（同樣的輸入和設定再跑一次）。
 
-內建工具型 skill：`web_search`（DuckDuckGo，不需 key）、`fetch_url`（只取正文）、`github_repo`、`read_rss`、
+內建工具型 skill：`web_search`（DuckDuckGo，不需 key）、`fetch_url`（只取正文，但保留價格、規格、表格、短評論、日期和網站提供的結構化資料；篇幅 xhigh / max 時讀 2 / 3 倍的字）、`github_repo`、`read_rss`、
 `http_check`、`system_status`、`tail_file`、`save_report`、`notify`、`create_workflow`、`use_skill` / `read_skill_file`。
 
 ## 本機模型（LM Studio）的防護
