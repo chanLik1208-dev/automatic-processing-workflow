@@ -706,6 +706,24 @@ def codex_models(exe):
     return _codex_models["list"]
 
 
+_agy_models = {"at": 0, "list": [], "exe": ""}
+
+
+def agy_models(exe):
+    """Gemini 訂閱（agy）目前帳號能用的模型：`agy models` 每行是「模型代號<Tab>顯示名稱」；一小時問一次。"""
+    if exe == _agy_models["exe"] and time.time() - _agy_models["at"] < 3600:
+        return _agy_models["list"]
+    try:
+        out = subprocess.run([exe, "models"], capture_output=True, text=True, encoding="utf-8", timeout=30,
+                             stdin=subprocess.DEVNULL).stdout
+        got = [l.split("\t", 1)[0].strip() for l in out.splitlines() if "\t" in l]
+        _agy_models["list"] = [m for m in got if re.fullmatch(r"[\w.\-]+", m)]
+    except Exception:
+        pass
+    _agy_models.update(at=time.time(), exe=exe)
+    return _agy_models["list"]
+
+
 def _mcp_command():
     """codex 要怎麼開我們的 MCP 伺服器：打包版就是自己（加 --mcp-skills），原始碼執行是 python app.py --mcp-skills。"""
     if getattr(sys, "frozen", False):
@@ -1233,7 +1251,9 @@ def ping_provider(name):
         p = provider_conf(name)
         if p.get("type") == "cli":
             exe = cli_exe(p)
-            models = p.get("models", []) + (codex_models(exe) if exe and p.get("adapter") == "codex" else [])
+            found = (codex_models(exe) if p.get("adapter") == "codex" else agy_models(exe) if p.get("adapter") == "gemini"
+                     else []) if exe and os.path.exists(exe) else []
+            models = p.get("models", []) + found
             info = {"kind": "cli", "label": p.get("label"), "default_model": p["default_model"], "models": list(dict.fromkeys(models))}
             if not exe or not os.path.exists(exe):
                 plat = "win32" if sys.platform == "win32" else "darwin" if sys.platform == "darwin" else "linux"
