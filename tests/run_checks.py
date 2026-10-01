@@ -495,9 +495,16 @@ def t_browser_read():
         off = fetch_url.run(url)
         assert off.startswith(fetch_url.NO_TEXT), off
         conf["browser"]["enabled"] = True
+        # 拿程式寫設定用的同一把鎖，一路拿到讀完：背景執行緒（例如自動加入訂閱模型）不能在中間把舊的設定寫回去。
+        # CI 上偶發過一次「剛打開就讀到關閉」，失敗時把當下的設定和權限一起印出來
+        engine.CONFIG_LOCK.acquire()
         conf_path.write_text(_j.dumps(conf, ensure_ascii=False), encoding="utf-8")
-        on = fetch_url.run(url)
-        assert "JavaScript 產生的" in on and "用你登入的瀏覽器" in on, on
+        try:
+            on = fetch_url.run(url)
+        finally:
+            state = f"browser.enabled={fetch_url._cfg('browser.enabled', None)!r} perms={getattr(engine._ctx, 'perms', None)!r}"
+            engine.CONFIG_LOCK.release()
+        assert "JavaScript 產生的" in on and "用你登入的瀏覽器" in on, f"{on}　〔{state}〕"
         # 自動讀也要先把整頁瀏覽一遍：要捲到下面才載入的評論、拆成好幾個 span 的價格都要讀到
         lazy = fetch_url.run(url + "lazy")
         assert "買家評價：很保暖" in lazy and "¥199.00" in lazy, lazy[:400]
