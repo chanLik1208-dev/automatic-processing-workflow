@@ -453,14 +453,19 @@ def t_browser_read():
             dead = so.getsockname()[1]
         dom, err = fetch_url._browser_dom(f"http://127.0.0.1:{dead}/", 30)
         assert not dom and "打不開這個網址" in err and "ERR_CONNECTION_REFUSED" in err, (err, dom[:200])
-        # 登入視窗還開著（瀏覽器資料夾被占用）：先講清楚，不要等到讀回空的
-        fetch_url.PROFILE.mkdir(parents=True, exist_ok=True)
-        lock = fetch_url.PROFILE / "SingletonLock"
-        os.symlink(f"host-{os.getpid()}", lock)
-        try:
-            assert "登入視窗」還開著" in fetch_url._browser_dom(url, 10)[1]
-        finally:
-            os.remove(lock)
+        # 登入視窗還開著（瀏覽器資料夾被占用）：先講清楚，不要等到讀回空的。
+        # Chrome 被強制結束時會留下舊的 SingletonLock（指向已經不在的行程）：那不算占用，讀取要照常
+        if sys.platform != "win32":                      # Windows 的 Chrome 不用 SingletonLock
+            fetch_url.PROFILE.mkdir(parents=True, exist_ok=True)
+            lock = fetch_url.PROFILE / "SingletonLock"
+            if os.path.lexists(lock):
+                assert not fetch_url._profile_in_use(), "上一次讀取留下的舊鎖被當成登入視窗還開著"
+                os.remove(lock)
+            os.symlink(f"host-{os.getpid()}", lock)
+            try:
+                assert "登入視窗」還開著" in fetch_url._browser_dom(url, 10)[1]
+            finally:
+                os.remove(lock)
     finally:
         srv.shutdown()
         conf["browser"]["enabled"] = False
