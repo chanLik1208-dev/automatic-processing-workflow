@@ -754,6 +754,7 @@ def t_ask_user_browser():
             pass
 
         def do_GET(self):
+            time.sleep(1.5)                          # 慢的網頁：使用者在載完前就按「完成」，也要等載完才讀
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
