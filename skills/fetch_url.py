@@ -429,6 +429,13 @@ def _from_html(raw, max_chars, url=""):
             f"（已略過 {hidden} 個一般人看不到的區塊）" if hidden else ""]
     out = "\n".join(h for h in head if h)
     pics = _images(body, url)
-    tail = ("\n\n圖片（跟任務有關時可以用 view_image 看，不要每張都看）：\n" +
+    if len(pics) < 3:                                    # 正文區塊裡圖少（例如商品頁的主圖在別的區塊）：整頁再找一次
+        seen = {u for _, u in pics}
+        pics += [x for x in _images(raw, url) if x[1] not in seen][:12 - len(pics)]
+    og = _meta(raw, "og:image")                         # 網站自己標的主圖（商品頁通常就是商品照）
+    og = urllib.parse.urljoin(url, og) if og and url else og
+    if og and og.lower().startswith(("http://", "https://")) and not IMG_SKIP.search(og) and all(u != og for _, u in pics):
+        pics = [("頁面主圖", og)] + pics[:11]
+    tail = ("\n\n圖片（商品實拍、尺寸表、圖表等常有文字裡沒有的資訊；跟任務有關的用 view_image 看，不要每張都看）：\n" +
             "\n".join(f"{i}. {alt or '（沒有說明）'} — {src}" for i, (alt, src) in enumerate(pics, 1))) if pics else ""
     return (out + "\n---\n" + text if out else text)[:max(max_chars - len(tail), 500)] + tail

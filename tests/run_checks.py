@@ -878,6 +878,25 @@ def t_web_images():
         web = sorted((HOME / "uploads" / "web").glob("*.png"))
         assert web, "view_image 沒有把圖片存在 uploads/web"
         good = engine.IMAGE_MARK + f"{web[0]}\nhttp://a/b.png\n1 bytes"
+        # 自動看圖（預設每頁 2 張）：讀完網頁，模型還沒開口要看，圖片就已經在下一則訊息裡
+        second = reqs[1]["messages"]
+        assert second[-1]["role"] == "user" and isinstance(second[-1]["content"], list) and \
+            second[-1]["content"][1]["image_url"]["url"].startswith("data:image/png"), "讀完網頁沒有自動附上圖片"
+        assert "已自動附上這頁前 1 張圖片" in second[-2]["content"], second[-2]["content"][-200:]
+        with engine.db() as c:
+            auto = c.execute("SELECT COUNT(*) FROM steps WHERE run_id=? AND name='view_image' AND input LIKE '%\"auto\": true%'",
+                             (rid,)).fetchone()[0]
+        assert auto == 1, auto
+        assert "view_image" in reqs[0]["messages"][0]["content"], "系統提示要說商品、圖表類任務要看圖"
+        # 設成 0：不自動看，讓模型自己決定
+        raw2 = _j.loads((HOME / "config.json").read_text(encoding="utf-8"))
+        raw2.setdefault("fetch", {})["auto_images"] = 0
+        (HOME / "config.json").write_text(_j.dumps(raw2, ensure_ascii=False), encoding="utf-8")
+        n = len(reqs)
+        rid0 = engine.run_workflow("img-check", "manual", "")
+        assert not isinstance(reqs[n + 1]["messages"][-1]["content"], list), "設成 0 還是自動附了圖片"
+        raw2["fetch"]["auto_images"] = 2
+        (HOME / "config.json").write_text(_j.dumps(raw2, ensure_ascii=False), encoding="utf-8")
         viewed = ["x"] * engine.VIEW_IMAGE_MAX
         text, img = engine.take_image("view_image", good, viewed)
         assert img is None and "上限" in text, text
@@ -895,7 +914,7 @@ def t_web_images():
     finally:
         site.shutdown()
         model.shutdown()
-    return "列出正文圖片、跳過 logo / 追蹤點；view_image 取回的圖片送到模型；每次最多 6 張；其他工具假冒的圖片路徑不收"
+    return "列出正文圖片、跳過 logo / 追蹤點；讀完網頁自動附前幾張圖（可設 0 關掉）；view_image 取回的圖片送到模型；每次最多 6 張；其他工具假冒的圖片路徑不收"
 
 
 def t_update():
