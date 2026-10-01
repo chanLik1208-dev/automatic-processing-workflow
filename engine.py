@@ -871,7 +871,7 @@ def chat_cli(p, model, messages, tools, live, timeout=600):
         system += TOOL_PROTOCOL.format(specs=json.dumps([t["function"] for t in tools], ensure_ascii=False, indent=1))
     if p.get("adapter") == "gemini":
         text, usage = chat_agy(p, model or p.get("default_model") or "", system, messages, live, timeout, bool(tools))
-        return _cli_reply(p, model or p.get("default_model") or "", text, "", tools, usage)
+        return _cli_reply(p, model or p.get("default_model") or "", text, live.pop("_agy_thinking", ""), tools, usage)
     model = model or p["default_model"]
     cmd = [cli_exe(p),
            "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
@@ -976,6 +976,67 @@ class AgyMalformedCall(RuntimeError):
     pass
 
 
+def _pb_fields(b):
+    """極簡 protobuf 解碼：逐一回傳 (欄位編號, 型別, 值)。只用來讀 agy 自己存的對話紀錄。"""
+    i, n = 0, len(b)
+
+    def varint():
+        nonlocal i
+        v = s = 0
+        while True:
+            x = b[i]
+            i += 1
+            v |= (x & 0x7F) << s
+            s += 7
+            if x < 0x80:
+                return v
+    while i < n:
+        key = varint()
+        f, w = key >> 3, key & 7
+        if w == 0:
+            v = varint()
+        elif w == 2:
+            ln = varint()
+            v, i = b[i:i + ln], i + ln
+        elif w == 1:
+            v, i = b[i:i + 8], i + 8
+        elif w == 5:
+            v, i = b[i:i + 4], i + 4
+        else:
+            raise ValueError(f"不支援的 protobuf 型別 {w}")
+        yield f, w, v
+
+
+AGY_HOME = pathlib.Path.home() / ".gemini" / "antigravity-cli"     # agy 存設定和對話的地方
+
+
+def agy_thoughts(conversation_id):
+    """Gemini 的思考內容。agy 的輸出（stream-json、json）只回報思考用了幾個 token，不給內容（實測 1.2.14）；
+    但它會把整段對話（含思考）存在 ~/.gemini/antigravity-cli/conversations/<對話 id>.db。
+    回覆步驟（step_type 15）的 step_payload 裡，欄位 20 是這則回覆：1 = 回答、3 = 思考。格式是 agy 內部的，
+    之後版本可能改，所以讀不到就回傳空字串，絕不影響執行。"""
+    if not re.fullmatch(r"[0-9a-fA-F-]{8,64}", conversation_id or ""):
+        return ""
+    path = AGY_HOME / "conversations" / f"{conversation_id}.db"
+    if not path.exists():
+        return ""
+    import sqlite3
+    out = []
+    try:
+        con = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=1)
+        try:
+            rows = con.execute("SELECT step_payload FROM steps WHERE step_type = 15 ORDER BY idx").fetchall()
+        finally:
+            con.close()
+        for (payload,) in rows:
+            for f, w, v in _pb_fields(payload or b""):
+                if f == 20 and w == 2:
+                    out += [v2.decode("utf-8", "replace") for f2, w2, v2 in _pb_fields(v) if f2 == 3 and w2 == 2]
+    except Exception:
+        return ""
+    return "\n\n".join(t.strip() for t in out if t.strip())
+
+
 def _agy_once(p, cmd, prompt, live, timeout):
     tmp = tempfile.mkdtemp(prefix="wf-cli-")
     images = live.get("_images") or []
@@ -994,7 +1055,17 @@ def _agy_once(p, cmd, prompt, live, timeout):
     live["_proc"] = proc
     killer = threading.Timer(timeout, proc.kill)
     killer.start()
-    result, errline = None, ""
+    live["content"] = ""                                   # 重試時從頭顯示
+    result, errline, conv = None, "", {"id": ""}
+    stop = threading.Event()
+
+    def watch_thoughts():
+        # 執行中每隔一下讀一次 agy 存的對話：思考內容即時出現在監控頁「現在」那一區
+        while not stop.wait(1.5):
+            t = agy_thoughts(conv["id"])
+            if t:
+                live["reasoning"] = t
+    threading.Thread(target=watch_thoughts, daemon=True).start()
     try:
         proc.stdin.write(json.dumps({"event": "user", "message": {"content": prompt}}, ensure_ascii=False) + "\n")
         proc.stdin.close()
@@ -1011,10 +1082,18 @@ def _agy_once(p, cmd, prompt, live, timeout):
             except ValueError:
                 continue
             live["last_token"] = time.time()
-            if e.get("event") == "result":
+            if e.get("event") == "init":
+                conv["id"] = e.get("conversation_id") or (e.get("init") or {}).get("conversation_id") or ""
+            elif e.get("event") == "step_update":
+                su = e.get("step_update") or {}
+                if su.get("step_type") == "agent_response" and su.get("text_delta"):
+                    live.update(phase="writing", content=(live.get("content") or "") + su["text_delta"])
+            elif e.get("event") == "result":
                 result = e.get("result") or {}
+                conv["id"] = conv["id"] or result.get("conversation_id") or ""
         proc.wait()
     finally:
+        stop.set()
         killer.cancel()
         live.pop("_proc", None)
         shutil.rmtree(tmp, ignore_errors=True)
@@ -1027,6 +1106,9 @@ def _agy_once(p, cmd, prompt, live, timeout):
         elif re.search(r"improperly formatted function call|MALFORMED_FUNCTION_CALL", err, re.I):
             raise AgyMalformedCall(f"agy 執行失敗：Gemini 的工具呼叫格式錯誤（{err[:200]}）")
         raise RuntimeError(f"agy 執行失敗：{err[:400]}")
+    live["_agy_thinking"] = agy_thoughts(conv["id"])        # 跑完再讀一次完整的思考，存進這一步的紀錄
+    if live["_agy_thinking"]:
+        live["reasoning"] = live["_agy_thinking"]
     u = result.get("usage") or {}
     return result.get("response") or "", {"prompt_tokens": u.get("input_tokens", 0) + u.get("cache_read_tokens", 0),
                                           "completion_tokens": u.get("output_tokens", 0) + u.get("thinking_tokens", 0)}
